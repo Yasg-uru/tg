@@ -13,13 +13,41 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
     // Parse form data
     const formData = await request.formData();
-    const file = formData.get('file') as File;
+    
+    // Support both 'file' and 'files' keys for better compatibility
+    const files: File[] = [];
+    
+    const fileEntries = formData.getAll('file');
+    const filesEntries = formData.getAll('files');
+    
+    [...fileEntries, ...filesEntries].forEach(entry => {
+      if (entry instanceof File) {
+        files.push(entry);
+      }
+    });
+
     const fileTypeHint = formData.get('fileType') as string | null;
 
-    // Delegate processing to the service layer
-    const response = await CSVUploadService.processUpload(file, fileTypeHint);
+    if (files.length === 0) {
+      throw new AppError('No file provided', 400);
+    }
 
-    return NextResponse.json(response, { status: 200 });
+    // Process all files
+    const results = [];
+    for (const file of files) {
+      const response = await CSVUploadService.processUpload(file, fileTypeHint);
+      results.push(response);
+    }
+
+    // If only one file, return single response for backward compatibility
+    // Otherwise return the last one or a summary (adjusting based on expected UI)
+    const finalResponse = files.length === 1 ? results[0] : {
+      success: true,
+      message: `Successfully processed ${files.length} files`,
+      results: results
+    };
+
+    return NextResponse.json(finalResponse, { status: 200 });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error';
     
