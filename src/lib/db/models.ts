@@ -163,14 +163,18 @@ export const ElectiveGroup =
 // Lab Batches
 export interface ILabBatch extends Document {
   labBatchId: string;
-  batchId: string;
-  labNumber: number;
-  parentBatchId?: string;
-  totalStudents: number;
+  parentBatchId: string;
+  labBatchName: string;
+  branch: string;
+  year: number;
+  semester: number;
+  batchLabel?: string;
+  studentCount: number;
+  assignedSubjectCodes: string;
+  preferredDays?: string;
+  preferredSlots?: string;
   assignedRoom?: string;
-  teacherIncharge: string;
-  labName?: string;
-  capacity: number;
+  notes?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -178,14 +182,18 @@ export interface ILabBatch extends Document {
 const labBatchesSchema = new Schema<ILabBatch>(
   {
     labBatchId: { type: String, required: true, unique: true, index: true },
-    batchId: { type: String, required: true, index: true },
-    labNumber: { type: Number, required: true },
-    parentBatchId: String,
-    totalStudents: { type: Number, required: true },
+    parentBatchId: { type: String, required: true, index: true },
+    labBatchName: { type: String, required: true },
+    branch: { type: String, required: true },
+    year: { type: Number, required: true },
+    semester: { type: Number, required: true },
+    batchLabel: String,
+    studentCount: { type: Number, required: true },
+    assignedSubjectCodes: { type: String, required: true },
+    preferredDays: String,
+    preferredSlots: String,
     assignedRoom: String,
-    teacherIncharge: { type: String, required: true },
-    labName: String,
-    capacity: { type: Number, required: true },
+    notes: String,
   },
   { timestamps: true }
 );
@@ -241,12 +249,13 @@ export const Room =
 
 // Subject Room Mapping
 export interface ISubjectRoomMapping extends Document {
-  mappingId: string;
   subjectCode: string;
-  roomIds: string[];
-  preferredRoomId?: string;
-  requiresSpecialEquipment: boolean;
+  subjectName: string;
+  branch: string;
+  preferredRoomIds: string;
+  alternateRoomIds?: string;
   requiredEquipment?: string;
+  minRoomCapacity?: number;
   notes?: string;
   createdAt: Date;
   updatedAt: Date;
@@ -254,12 +263,13 @@ export interface ISubjectRoomMapping extends Document {
 
 const subjectRoomMappingSchema = new Schema<ISubjectRoomMapping>(
   {
-    mappingId: { type: String, required: true, unique: true, index: true },
-    subjectCode: { type: String, required: true, index: true },
-    roomIds: [String],
-    preferredRoomId: String,
-    requiresSpecialEquipment: { type: Boolean, default: false },
+    subjectCode: { type: String, required: true, unique: true, index: true },
+    subjectName: { type: String, required: true },
+    branch: { type: String, required: true },
+    preferredRoomIds: { type: String, required: true },
+    alternateRoomIds: String,
     requiredEquipment: String,
+    minRoomCapacity: Number,
     notes: String,
   },
   { timestamps: true }

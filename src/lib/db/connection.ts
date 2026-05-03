@@ -1,28 +1,34 @@
 import mongoose from 'mongoose';
 import type { MongooseCache } from '@/lib/types/mongoose.d';
 
-const MONGODB_URI = process.env.MONGODB_URI || '';
+type GlobalMongoose = typeof globalThis & {
+  mongoose?: MongooseCache;
+};
 
-if (!MONGODB_URI) {
-  throw new Error(
-    'Please define the MONGODB_URI environment variable inside .env.local'
-  );
-}
+const globalWithMongoose = globalThis as GlobalMongoose;
 
 /**
  * Global is used here to maintain a cached connection across hot reloads
  * in development. This prevents connections growing exponentially
  * during API Route usage.
  */
-let cached: MongooseCache | undefined = (global as any).mongoose;
+let cached: MongooseCache | undefined = globalWithMongoose.mongoose;
 
 if (!cached) {
-  cached = (global as any).mongoose = { conn: null, promise: null };
+  cached = globalWithMongoose.mongoose = { conn: null, promise: null };
 }
 
 export async function dbConnect() {
+  const MONGODB_URI = process.env.MONGODB_URI || '';
+
+  if (!MONGODB_URI) {
+    throw new Error(
+      'Please define the MONGODB_URI environment variable inside .env.local'
+    );
+  }
+
   if (!cached) {
-    cached = (global as any).mongoose = { conn: null, promise: null };
+    cached = globalWithMongoose.mongoose = { conn: null, promise: null };
   }
 
   if (cached.conn) {
@@ -48,7 +54,7 @@ export async function dbConnect() {
 
   try {
     if (!cached) {
-      cached = (global as any).mongoose;
+      cached = globalWithMongoose.mongoose;
     }
     cached!.conn = await cached!.promise!;
   } catch (e) {
@@ -63,7 +69,7 @@ export async function dbConnect() {
 
 export async function dbDisconnect() {
   if (!cached) {
-    cached = (global as any).mongoose;
+    cached = globalWithMongoose.mongoose;
   }
 
   if (cached?.conn) {

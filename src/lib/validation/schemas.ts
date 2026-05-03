@@ -10,7 +10,7 @@ const timeSchema = z.string().regex(/^\d{2}:\d{2}$/, 'Invalid time format (HH:MM
 export const academicCalendarSchema = z.object({
   eventId: z.string().min(1, 'eventId is required'),
   eventName: z.string().min(1, 'eventName is required'),
-  eventType: z.enum(['national_holiday', 'festival_holiday', 'exam', 'event']),
+  eventType: z.string().min(1, 'eventType is required'),
   startDate: dateSchema,
   endDate: dateSchema,
   affectedBranches: z.string().min(1, 'affectedBranches is required'),
@@ -79,14 +79,18 @@ export type ElectiveGroup = z.infer<typeof electiveGroupsSchema>;
 // Lab Batches Schema
 export const labBatchesSchema = z.object({
   labBatchId: z.string().min(1, 'labBatchId is required'),
-  batchId: z.string().min(1, 'batchId is required'),
-  labNumber: z.string().regex(/^\d+$/, 'labNumber must be numeric'),
-  parentBatchId: z.string().optional(),
-  totalStudents: z.string().regex(/^\d+$/, 'totalStudents must be numeric'),
+  parentBatchId: z.string().min(1, 'parentBatchId is required'),
+  labBatchName: z.string().min(1, 'labBatchName is required'),
+  branch: z.enum(['IT', 'IoT']),
+  year: z.string().regex(/^\d+$/, 'year must be numeric'),
+  semester: z.string().regex(/^\d+$/, 'semester must be numeric'),
+  batchLabel: z.string().optional(),
+  studentCount: z.string().regex(/^\d+$/, 'studentCount must be numeric'),
+  assignedSubjectCodes: z.string().min(1, 'assignedSubjectCodes is required'),
+  preferredDays: z.string().optional(),
+  preferredSlots: z.string().optional(),
   assignedRoom: z.string().optional(),
-  teacherIncharge: z.string().min(1, 'teacherIncharge is required'),
-  labName: z.string().optional(),
-  capacity: z.string().regex(/^\d+$/, 'capacity must be numeric'),
+  notes: z.string().optional(),
 });
 
 export type LabBatch = z.infer<typeof labBatchesSchema>;
@@ -114,12 +118,13 @@ export type Room = z.infer<typeof roomsSchema>;
 
 // Subject Room Mapping Schema
 export const subjectRoomMappingSchema = z.object({
-  mappingId: z.string().min(1, 'mappingId is required'),
   subjectCode: z.string().min(1, 'subjectCode is required'),
-  roomIds: z.string().min(1, 'roomIds is required'),
-  preferredRoomId: z.string().optional(),
-  requiresSpecialEquipment: z.string().transform((val) => val.toLowerCase() === 'true'),
+  subjectName: z.string().min(1, 'subjectName is required'),
+  branch: z.string().min(1, 'branch is required'),
+  preferredRoomIds: z.string().min(1, 'preferredRoomIds is required'),
+  alternateRoomIds: z.string().optional(),
   requiredEquipment: z.string().optional(),
+  minRoomCapacity: z.string().regex(/^\d+$/, 'minRoomCapacity must be numeric').optional(),
   notes: z.string().optional(),
 });
 
@@ -188,6 +193,15 @@ export const timeslotsSchema = z.object({
 });
 
 export type Timeslot = z.infer<typeof timeslotsSchema>;
+
+export const generateTimetableRequestSchema = z.object({
+  batchIds: z.array(z.string().min(1)).optional(),
+  publish: z.boolean().optional(),
+  persist: z.boolean().optional(),
+  weekDays: z.array(z.string().min(1)).min(1).max(7).optional(),
+});
+
+export type GenerateTimetableRequest = z.infer<typeof generateTimetableRequestSchema>;
 
 // Map file types to schemas
 export const schemaMap = {

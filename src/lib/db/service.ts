@@ -51,7 +51,7 @@ function getUniqueIdField(fileType: CSVFileType): string {
     [CSVFileType.ELECTIVE_GROUPS]: 'electiveGroupId',
     [CSVFileType.LAB_BATCHES]: 'labBatchId',
     [CSVFileType.ROOMS]: 'roomId',
-    [CSVFileType.SUBJECT_ROOM_MAPPING]: 'mappingId',
+    [CSVFileType.SUBJECT_ROOM_MAPPING]: 'subjectCode',
     [CSVFileType.SUBJECTS_IOT]: 'subjectCode',
     [CSVFileType.SUBJECTS_IT]: 'subjectCode',
     [CSVFileType.TEACHERS]: 'teacherId',

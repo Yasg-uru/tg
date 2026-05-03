@@ -17,21 +17,23 @@ export function detectFileType(
 ): CSVFileType | null {
   const nameNormalized = filename.toLowerCase().replace(/\s+/g, '_');
 
-  // Map filename patterns to file types
+  // Map filename patterns to file types (order matters - check specific patterns first)
   const patterns: Record<string, CSVFileType> = {
+    // Most specific patterns first
+    'lab_batch': CSVFileType.LAB_BATCHES,
+    'lab-batch': CSVFileType.LAB_BATCHES,
+    'subject_room': CSVFileType.SUBJECT_ROOM_MAPPING,
+    'subject-room': CSVFileType.SUBJECT_ROOM_MAPPING,
+    subject_iot: CSVFileType.SUBJECTS_IOT,
+    subject_it: CSVFileType.SUBJECTS_IT,
+    // Then more generic patterns
     academic: CSVFileType.ACADEMIC_CALENDAR,
     calendar: CSVFileType.ACADEMIC_CALENDAR,
     batch: CSVFileType.BATCHES,
     constraint: CSVFileType.CONSTRAINTS,
     elective: CSVFileType.ELECTIVE_GROUPS,
-    'lab_batch': CSVFileType.LAB_BATCHES,
-    'lab-batch': CSVFileType.LAB_BATCHES,
     room: CSVFileType.ROOMS,
-    'subject_room': CSVFileType.SUBJECT_ROOM_MAPPING,
-    'subject-room': CSVFileType.SUBJECT_ROOM_MAPPING,
-    subject_iot: CSVFileType.SUBJECTS_IOT,
     'iot': CSVFileType.SUBJECTS_IOT,
-    subject_it: CSVFileType.SUBJECTS_IT,
     '_it': CSVFileType.SUBJECTS_IT,
     teacher: CSVFileType.TEACHERS,
     timeslot: CSVFileType.TIMESLOTS,
