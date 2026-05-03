@@ -1,10 +1,11 @@
 'use client';
 
-import { useState, useCallback, useEffect } from 'react';
-import { Upload, RefreshCw, Play, Download, AlertCircle, CheckCircle2, Clock } from 'lucide-react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
+import { Upload, RefreshCw, Play, Download, AlertCircle, CheckCircle2, Clock, Circle, Brain, ShieldAlert } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -30,6 +31,20 @@ interface Batch {
   semester: number;
 }
 
+interface GeneratedAssignment {
+  assignmentId: string;
+  batchId: string;
+  batchName: string;
+  subjectCode: string;
+  day: string;
+  slotId: string;
+  teacherName: string;
+  subjectName: string;
+  roomName: string;
+  startTime: string;
+  endTime: string;
+}
+
 interface GenerationResult {
   success: boolean;
   message: string;
@@ -38,16 +53,7 @@ interface GenerationResult {
     status: 'draft' | 'published';
     provider: string;
     model: string;
-    assignments: Array<{
-      assignmentId: string;
-      day: string;
-      slotId: string;
-      teacherName: string;
-      subjectName: string;
-      roomName: string;
-      startTime: string;
-      endTime: string;
-    }>;
+    assignments: GeneratedAssignment[];
     validation: {
       conflictFree: boolean;
       issues: Array<{ severity: string; message: string }>;
@@ -69,6 +75,71 @@ interface GenerationResult {
   };
 }
 
+interface RequiredDatasetStatus {
+  key: string;
+  label: string;
+  fileName: string;
+  count: number;
+  uploaded: boolean;
+}
+
+interface AnalysisRecommendation {
+  id: string;
+  severity: 'high' | 'medium' | 'low';
+  title: string;
+  detail: string;
+  action: string;
+}
+
+interface BranchSemesterInsight {
+  branch: string;
+  semester: number;
+  batchCount: number;
+  subjectCount: number;
+  availableTeachers: number;
+  demandHoursPerWeek: number;
+  recommendedTeachers: number;
+  teacherGap: number;
+}
+
+interface QualityAnalysis {
+  verdict: 'excellent' | 'good' | 'needs-improvement' | 'critical';
+  readinessScore: number;
+  highlights: string[];
+  recommendations: AnalysisRecommendation[];
+  branchSemesterInsights: BranchSemesterInsight[];
+  timetableReview: {
+    found: boolean;
+    generationId?: string;
+    status?: string;
+    score?: number;
+    label?: string;
+    assignmentCount?: number;
+    hardConflicts?: number;
+    unplacedCount?: number;
+    qualityVerdict: 'excellent' | 'good' | 'needs-improvement' | 'critical';
+    notes: string[];
+  };
+}
+
+interface AnalysisApiResponse {
+  success: boolean;
+  data?: {
+    provider: 'gemini' | 'openai' | 'heuristic';
+    model: string;
+    generatedAt: string;
+    analysis: QualityAnalysis;
+  };
+  message?: string;
+}
+
+const DAY_ORDER = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+
+function toMinutes(time: string): number {
+  const [hours, minutes] = time.split(':').map(Number);
+  return (hours || 0) * 60 + (minutes || 0);
+}
+
 export function TimetableDashboard() {
   const [tab, setTab] = useState('upload');
   const [batches, setBatches] = useState<Batch[]>([]);
@@ -77,15 +148,69 @@ export function TimetableDashboard() {
   const [generating, setGenerating] = useState(false);
   const [generationResult, setGenerationResult] = useState<GenerationResult | null>(null);
   const [loadingBatches, setLoadingBatches] = useState(false);
+  const [loadingReadiness, setLoadingReadiness] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [requiredDatasets, setRequiredDatasets] = useState<RequiredDatasetStatus[]>([]);
+  const [qualityAnalysis, setQualityAnalysis] = useState<AnalysisApiResponse['data'] | null>(null);
+  const [loadingAnalysis, setLoadingAnalysis] = useState(false);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
 
   // Fetch batches on mount
   useEffect(() => {
     fetchBatches();
+    fetchUploadReadiness();
+    fetchLatestGeneratedTimetable();
+    fetchQualityAnalysis();
   }, []);
 
-  const fetchBatches = async () => {
+  async function fetchQualityAnalysis() {
+    setLoadingAnalysis(true);
+    try {
+      const response = await fetch('/api/analysis', {
+        method: 'GET',
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to run quality analysis');
+      }
+
+      const result: AnalysisApiResponse = await response.json();
+      if (result.success && result.data) {
+        setQualityAnalysis(result.data);
+        setAnalysisError(null);
+      }
+    } catch (err) {
+      setAnalysisError(err instanceof Error ? err.message : 'Failed to run quality analysis');
+    } finally {
+      setLoadingAnalysis(false);
+    }
+  }
+
+  async function fetchLatestGeneratedTimetable() {
+    try {
+      const response = await fetch('/api/generate', {
+        method: 'GET',
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to fetch latest generated timetable');
+      }
+
+      const result: GenerationResult & { data?: GenerationResult['data'] | null } = await response.json();
+      if (result.success && result.data) {
+        setGenerationResult({
+          success: true,
+          message: result.message,
+          data: result.data,
+        });
+      }
+    } catch {
+      // Ignore hydrate errors to avoid blocking primary dashboard flows.
+    }
+  }
+
+  async function fetchBatches() {
     setLoadingBatches(true);
     try {
       const response = await fetch('/api/batches');
@@ -98,7 +223,89 @@ export function TimetableDashboard() {
     } finally {
       setLoadingBatches(false);
     }
-  };
+  }
+
+  async function fetchUploadReadiness() {
+    setLoadingReadiness(true);
+    try {
+      const response = await fetch('/api/upload/status');
+      if (!response.ok) throw new Error('Failed to fetch upload readiness');
+
+      const data = await response.json();
+      setRequiredDatasets(data.data?.required || []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to fetch upload readiness');
+    } finally {
+      setLoadingReadiness(false);
+    }
+  }
+
+  const allRequiredUploaded = requiredDatasets.length > 0 && requiredDatasets.every((dataset) => dataset.uploaded);
+  const missingDatasets = requiredDatasets.filter((dataset) => !dataset.uploaded);
+
+  const batchById = useMemo(() => {
+    return new Map(batches.map((batch) => [batch.batchId, batch]));
+  }, [batches]);
+
+  const groupedAssignments = useMemo(() => {
+    const assignments = generationResult?.data?.assignments ?? [];
+    const branchMap = new Map<
+      string,
+      {
+        branch: string;
+        totalAssignments: number;
+        semesters: Map<
+          number,
+          {
+            semester: number;
+            assignments: GeneratedAssignment[];
+          }
+        >;
+      }
+    >();
+
+    for (const assignment of assignments) {
+      const batch = batchById.get(assignment.batchId);
+      const branch = batch?.branch || 'Unassigned Branch';
+      const semester = batch?.semester || 0;
+
+      if (!branchMap.has(branch)) {
+        branchMap.set(branch, {
+          branch,
+          totalAssignments: 0,
+          semesters: new Map(),
+        });
+      }
+
+      const branchGroup = branchMap.get(branch)!;
+      branchGroup.totalAssignments += 1;
+
+      if (!branchGroup.semesters.has(semester)) {
+        branchGroup.semesters.set(semester, {
+          semester,
+          assignments: [],
+        });
+      }
+
+      branchGroup.semesters.get(semester)!.assignments.push(assignment);
+    }
+
+    return Array.from(branchMap.values())
+      .map((branchGroup) => ({
+        ...branchGroup,
+        semesters: Array.from(branchGroup.semesters.values())
+          .map((semesterGroup) => ({
+            ...semesterGroup,
+            assignments: [...semesterGroup.assignments].sort((left, right) => {
+              const dayDelta = DAY_ORDER.indexOf(left.day) - DAY_ORDER.indexOf(right.day);
+              if (dayDelta !== 0) return dayDelta;
+              return left.startTime.localeCompare(right.startTime);
+            }),
+          }))
+          .sort((left, right) => left.semester - right.semester),
+      }))
+      .sort((left, right) => left.branch.localeCompare(right.branch));
+  }, [generationResult, batchById]);
 
   const handleFileUpload = useCallback(
     async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -138,8 +345,10 @@ export function TimetableDashboard() {
         setUploadProgress(100);
         setError(null);
         
-        // Refresh batches after upload
+        // Refresh data after upload
         await fetchBatches();
+        await fetchUploadReadiness();
+        await fetchQualityAnalysis();
         
         // Show success toast
         toast.success(`Successfully uploaded ${successCount} file${successCount > 1 ? 's' : ''}`, {
@@ -167,6 +376,15 @@ export function TimetableDashboard() {
   );
 
   const handleGenerateTimetable = async () => {
+    if (!allRequiredUploaded) {
+      const missingCsvs = missingDatasets.map((dataset) => dataset.fileName).join(', ');
+      setError('Please upload all required CSV files before generating timetable');
+      toast.error('Required CSV Files Missing', {
+        description: missingCsvs || 'Upload all required CSV files first',
+      });
+      return;
+    }
+
     if (selectedBatches.length === 0) {
       setError('Please select at least one batch');
       toast.error('No Batches Selected', {
@@ -196,6 +414,7 @@ export function TimetableDashboard() {
 
       const result: GenerationResult = await response.json();
       setGenerationResult(result);
+      await fetchQualityAnalysis();
       setTab('results');
       setError(null);
       
@@ -268,9 +487,10 @@ export function TimetableDashboard() {
 
         {/* Main Tabs */}
         <Tabs value={tab} onValueChange={setTab} className="w-full">
-          <TabsList className="grid w-full grid-cols-3">
+          <TabsList className="grid w-full grid-cols-4">
             <TabsTrigger value="upload">Upload Data</TabsTrigger>
             <TabsTrigger value="generate">Generate</TabsTrigger>
+            <TabsTrigger value="analysis">AI Analysis</TabsTrigger>
             <TabsTrigger value="results" disabled={!generationResult}>
               Results
             </TabsTrigger>
@@ -328,12 +548,42 @@ export function TimetableDashboard() {
                   </div>
                 )}
 
-                <div className="text-xs text-muted-foreground space-y-1">
-                  <p>• batches.csv - Batch information</p>
-                  <p>• subjects.csv - Subject details and credits</p>
-                  <p>• teachers.csv - Teacher availability and limits</p>
-                  <p>• rooms.csv - Room types and capacities</p>
-                  <p>• timeslots.csv - Daily time slots</p>
+                <div className="space-y-3">
+                  <p className="text-sm font-medium text-foreground">Required CSV Files Status</p>
+
+                  {loadingReadiness ? (
+                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                      <RefreshCw className="h-4 w-4 animate-spin" />
+                      Checking uploaded datasets...
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                      {requiredDatasets.map((dataset) => (
+                        <div
+                          key={dataset.key}
+                          className="flex items-center justify-between rounded-md border border-border bg-muted/30 px-3 py-2"
+                        >
+                          <div className="min-w-0">
+                            <p className="text-xs font-medium text-foreground truncate">{dataset.fileName}</p>
+                            <p className="text-[11px] text-muted-foreground">{dataset.label}</p>
+                          </div>
+                          <Badge variant={dataset.uploaded ? 'default' : 'secondary'}>
+                            {dataset.uploaded ? (
+                              <span className="flex items-center gap-1">
+                                <CheckCircle2 className="h-3.5 w-3.5" />
+                                {dataset.count}
+                              </span>
+                            ) : (
+                              <span className="flex items-center gap-1">
+                                <Circle className="h-3.5 w-3.5" />
+                                Missing
+                              </span>
+                            )}
+                          </Badge>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </CardContent>
             </Card>
@@ -341,6 +591,16 @@ export function TimetableDashboard() {
 
           {/* Generate Tab */}
           <TabsContent value="generate" className="space-y-4">
+            {!allRequiredUploaded && (
+              <Alert variant="destructive" className="border-destructive/40 bg-destructive/10 text-destructive">
+                <AlertCircle className="h-4 w-4" />
+                <AlertTitle>Required CSV files are missing</AlertTitle>
+                <AlertDescription>
+                  Upload these files before generating timetable: {missingDatasets.map((dataset) => dataset.fileName).join(', ')}
+                </AlertDescription>
+              </Alert>
+            )}
+
             <div className="grid gap-4 sm:grid-cols-2">
               <Card>
                 <CardHeader>
@@ -420,7 +680,7 @@ export function TimetableDashboard() {
 
                   <Button
                     onClick={handleGenerateTimetable}
-                    disabled={generating || selectedBatches.length === 0}
+                    disabled={generating || selectedBatches.length === 0 || !allRequiredUploaded}
                     className="w-full bg-emerald-600 hover:bg-emerald-700"
                   >
                     {generating ? (
@@ -438,6 +698,208 @@ export function TimetableDashboard() {
                 </CardContent>
               </Card>
             </div>
+          </TabsContent>
+
+          {/* AI Analysis Tab */}
+          <TabsContent value="analysis" className="space-y-4">
+            <Card>
+              <CardHeader>
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <CardTitle className="flex items-center gap-2">
+                      <Brain className="h-5 w-5" />
+                      Timetable Quality Advisor
+                    </CardTitle>
+                    <CardDescription>
+                      AI-backed insights to improve input data quality and generated timetable outcomes
+                    </CardDescription>
+                  </div>
+                  <Button variant="outline" onClick={fetchQualityAnalysis} disabled={loadingAnalysis}>
+                    {loadingAnalysis ? (
+                      <>
+                        <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+                        Analyzing...
+                      </>
+                    ) : (
+                      <>
+                        <RefreshCw className="mr-2 h-4 w-4" />
+                        Re-run Analysis
+                      </>
+                    )}
+                  </Button>
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {analysisError && (
+                  <Alert variant="destructive">
+                    <ShieldAlert className="h-4 w-4" />
+                    <AlertTitle>Analysis failed</AlertTitle>
+                    <AlertDescription>{analysisError}</AlertDescription>
+                  </Alert>
+                )}
+
+                {qualityAnalysis ? (
+                  <>
+                    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                      <Card className="border-border bg-muted/30">
+                        <CardContent className="pt-6">
+                          <p className="text-xs uppercase text-muted-foreground">Readiness Score</p>
+                          <p className="text-2xl font-bold">{qualityAnalysis.analysis.readinessScore}/100</p>
+                        </CardContent>
+                      </Card>
+                      <Card className="border-border bg-muted/30">
+                        <CardContent className="pt-6">
+                          <p className="text-xs uppercase text-muted-foreground">Overall Verdict</p>
+                          <div className="mt-1">
+                            <Badge variant="secondary" className="capitalize">
+                              {qualityAnalysis.analysis.verdict.replace('-', ' ')}
+                            </Badge>
+                          </div>
+                        </CardContent>
+                      </Card>
+                      <Card className="border-border bg-muted/30">
+                        <CardContent className="pt-6">
+                          <p className="text-xs uppercase text-muted-foreground">AI Provider</p>
+                          <p className="text-sm font-semibold uppercase">{qualityAnalysis.provider}</p>
+                        </CardContent>
+                      </Card>
+                      <Card className="border-border bg-muted/30">
+                        <CardContent className="pt-6">
+                          <p className="text-xs uppercase text-muted-foreground">Model</p>
+                          <p className="text-sm font-semibold">{qualityAnalysis.model}</p>
+                        </CardContent>
+                      </Card>
+                    </div>
+
+                    <Card>
+                      <CardHeader>
+                        <CardTitle className="text-base">Key Highlights</CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <ul className="space-y-2 text-sm text-slate-700 dark:text-slate-300">
+                          {qualityAnalysis.analysis.highlights.map((item, index) => (
+                            <li key={`${item}-${index}`} className="flex gap-2">
+                              <CheckCircle2 className="mt-0.5 h-4 w-4 text-emerald-500" />
+                              {item}
+                            </li>
+                          ))}
+                        </ul>
+                      </CardContent>
+                    </Card>
+
+                    <Card>
+                      <CardHeader>
+                        <CardTitle className="text-base">Recommendations to Improve Timetable Quality</CardTitle>
+                      </CardHeader>
+                      <CardContent className="space-y-3">
+                        {qualityAnalysis.analysis.recommendations.length === 0 ? (
+                          <p className="text-sm text-muted-foreground">No major issues found. Current data quality looks stable.</p>
+                        ) : (
+                          qualityAnalysis.analysis.recommendations.map((rec) => (
+                            <div key={rec.id} className="rounded-md border border-border p-3">
+                              <div className="mb-1 flex items-center justify-between gap-2">
+                                <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{rec.title}</p>
+                                <Badge
+                                  variant={
+                                    rec.severity === 'high'
+                                      ? 'destructive'
+                                      : rec.severity === 'medium'
+                                        ? 'secondary'
+                                        : 'outline'
+                                  }
+                                  className="capitalize"
+                                >
+                                  {rec.severity}
+                                </Badge>
+                              </div>
+                              <p className="text-sm text-slate-700 dark:text-slate-300">{rec.detail}</p>
+                              <p className="mt-1 text-xs text-slate-600 dark:text-slate-400">
+                                <span className="font-medium">Action:</span> {rec.action}
+                              </p>
+                            </div>
+                          ))
+                        )}
+                      </CardContent>
+                    </Card>
+
+                    <Card>
+                      <CardHeader>
+                        <CardTitle className="text-base">Branch/Semester Staffing Guidance</CardTitle>
+                        <CardDescription>
+                          Recommended teacher strength per semester based on subject-hour demand
+                        </CardDescription>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="overflow-x-auto rounded-md border border-border">
+                          <Table>
+                            <TableHeader>
+                              <TableRow>
+                                <TableHead>Branch</TableHead>
+                                <TableHead>Semester</TableHead>
+                                <TableHead>Subjects</TableHead>
+                                <TableHead>Demand (hrs/week)</TableHead>
+                                <TableHead>Teachers Available</TableHead>
+                                <TableHead>Teachers Recommended</TableHead>
+                                <TableHead>Gap</TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {qualityAnalysis.analysis.branchSemesterInsights.map((item) => (
+                                <TableRow key={`${item.branch}-${item.semester}`}>
+                                  <TableCell>{item.branch}</TableCell>
+                                  <TableCell>{item.semester}</TableCell>
+                                  <TableCell>{item.subjectCount}</TableCell>
+                                  <TableCell>{item.demandHoursPerWeek}</TableCell>
+                                  <TableCell>{item.availableTeachers}</TableCell>
+                                  <TableCell>{item.recommendedTeachers}</TableCell>
+                                  <TableCell>
+                                    {item.teacherGap > 0 ? (
+                                      <Badge variant="destructive">+{item.teacherGap}</Badge>
+                                    ) : (
+                                      <Badge variant="secondary">OK</Badge>
+                                    )}
+                                  </TableCell>
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        </div>
+                      </CardContent>
+                    </Card>
+
+                    <Card>
+                      <CardHeader>
+                        <CardTitle className="text-base">Latest Generated Timetable Review</CardTitle>
+                      </CardHeader>
+                      <CardContent className="space-y-3">
+                        <div className="flex items-center gap-2">
+                          <Badge variant="outline" className="capitalize">
+                            {qualityAnalysis.analysis.timetableReview.qualityVerdict.replace('-', ' ')}
+                          </Badge>
+                          {qualityAnalysis.analysis.timetableReview.score !== undefined && (
+                            <span className="text-sm text-muted-foreground">
+                              Score: {qualityAnalysis.analysis.timetableReview.score}
+                            </span>
+                          )}
+                        </div>
+                        <ul className="space-y-2 text-sm text-slate-700 dark:text-slate-300">
+                          {qualityAnalysis.analysis.timetableReview.notes.map((note, index) => (
+                            <li key={`${note}-${index}`} className="flex gap-2">
+                              <AlertCircle className="mt-0.5 h-4 w-4 text-amber-500" />
+                              {note}
+                            </li>
+                          ))}
+                        </ul>
+                      </CardContent>
+                    </Card>
+                  </>
+                ) : (
+                  <p className="text-sm text-muted-foreground">
+                    No analysis available yet. Click Re-run Analysis to evaluate data and timetable quality.
+                  </p>
+                )}
+              </CardContent>
+            </Card>
           </TabsContent>
 
           {/* Results Tab */}
@@ -536,48 +998,156 @@ export function TimetableDashboard() {
                   </CardContent>
                 </Card>
 
-                {/* Assignments Table */}
+                {/* Branch/Semester Timetable */}
                 {generationResult.data.assignments.length > 0 && (
                   <Card>
                     <CardHeader>
-                      <CardTitle className="text-slate-900 dark:text-white">Scheduled Sessions</CardTitle>
+                      <CardTitle className="text-slate-900 dark:text-white">Timetable View</CardTitle>
                       <CardDescription className="text-slate-600 dark:text-slate-400">
-                        Showing {generationResult.data.assignments.length} total assignments
+                        Grouped by branch, then by semester for clean schedule review
                       </CardDescription>
                     </CardHeader>
-                    <CardContent>
-                      <div className="overflow-x-auto">
-                        <Table>
-                          <TableHeader>
-                            <TableRow className="border-slate-200 dark:border-slate-700 hover:bg-transparent">
-                              <TableHead className="text-slate-700 dark:text-slate-300">Day</TableHead>
-                              <TableHead className="text-slate-700 dark:text-slate-300">Time</TableHead>
-                              <TableHead className="text-slate-700 dark:text-slate-300">Subject</TableHead>
-                              <TableHead className="text-slate-700 dark:text-slate-300">Teacher</TableHead>
-                              <TableHead className="text-slate-700 dark:text-slate-300">Room</TableHead>
-                              <TableHead className="text-slate-700 dark:text-slate-300">Slot</TableHead>
-                            </TableRow>
-                          </TableHeader>
-                          <TableBody>
-                            {generationResult.data.assignments.slice(0, 20).map((a) => (
-                              <TableRow key={a.assignmentId} className="border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800/50">
-                                <TableCell className="text-sm text-slate-900 dark:text-slate-100">{a.day}</TableCell>
-                                <TableCell className="text-sm text-slate-900 dark:text-slate-100">
-                                  {a.startTime} - {a.endTime}
-                                </TableCell>
-                                <TableCell className="text-sm font-medium text-slate-900 dark:text-slate-100">{a.subjectName}</TableCell>
-                                <TableCell className="text-sm text-slate-900 dark:text-slate-100">{a.teacherName}</TableCell>
-                                <TableCell className="text-sm text-slate-900 dark:text-slate-100">{a.roomName}</TableCell>
-                                <TableCell className="text-sm text-slate-900 dark:text-slate-100">{a.slotId}</TableCell>
-                              </TableRow>
+                    <CardContent className="space-y-4">
+                      {groupedAssignments.length === 0 ? (
+                        <p className="text-sm text-slate-600 dark:text-slate-400">No assignments to display.</p>
+                      ) : (
+                        <Tabs defaultValue={groupedAssignments[0].branch} className="w-full">
+                          <TabsList className="flex h-auto w-full flex-wrap justify-start gap-2 bg-muted/40 p-2">
+                            {groupedAssignments.map((branchGroup) => (
+                              <TabsTrigger key={branchGroup.branch} value={branchGroup.branch} className="data-[state=active]:bg-background">
+                                {branchGroup.branch}
+                                <Badge variant="secondary" className="ml-2">
+                                  {branchGroup.totalAssignments}
+                                </Badge>
+                              </TabsTrigger>
                             ))}
-                          </TableBody>
-                        </Table>
-                      </div>
-                      {generationResult.data.assignments.length > 20 && (
-                        <p className="text-xs text-slate-600 dark:text-slate-400 mt-4 text-center">
-                          ... and {generationResult.data.assignments.length - 20} more assignments
-                        </p>
+                          </TabsList>
+
+                          {groupedAssignments.map((branchGroup) => (
+                            <TabsContent key={branchGroup.branch} value={branchGroup.branch} className="space-y-4">
+                              <Card className="border-border bg-card/50">
+                                <CardHeader className="pb-3">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <div>
+                                      <CardTitle className="text-lg text-slate-900 dark:text-white">
+                                        {branchGroup.branch}
+                                      </CardTitle>
+                                      <CardDescription>
+                                        {branchGroup.semesters.length} semester group(s)
+                                      </CardDescription>
+                                    </div>
+                                    <Badge variant="outline">{branchGroup.totalAssignments} sessions</Badge>
+                                  </div>
+                                </CardHeader>
+                                <CardContent>
+                                  <Tabs defaultValue={String(branchGroup.semesters[0]?.semester)} className="w-full space-y-4">
+                                    <TabsList className="flex h-auto w-full flex-wrap justify-start gap-2 bg-muted/40 p-2">
+                                      {branchGroup.semesters.map((semesterGroup) => (
+                                        <TabsTrigger key={semesterGroup.semester} value={String(semesterGroup.semester)} className="data-[state=active]:bg-background">
+                                          {semesterGroup.semester > 0 ? `Semester ${semesterGroup.semester}` : 'Unassigned Semester'}
+                                          <Badge variant="secondary" className="ml-2">
+                                            {semesterGroup.assignments.length}
+                                          </Badge>
+                                        </TabsTrigger>
+                                      ))}
+                                    </TabsList>
+
+                                    {branchGroup.semesters.map((semesterGroup) => (
+                                      <TabsContent key={semesterGroup.semester} value={String(semesterGroup.semester)} className="space-y-2">
+                                        {(() => {
+                                          const slotMap = new Map<string, { startTime: string; endTime: string }>();
+                                          for (const assignment of semesterGroup.assignments) {
+                                            const key = `${assignment.startTime}::${assignment.endTime}`;
+                                            if (!slotMap.has(key)) {
+                                              slotMap.set(key, {
+                                                startTime: assignment.startTime,
+                                                endTime: assignment.endTime,
+                                              });
+                                            }
+                                          }
+
+                                          const orderedSlots = Array.from(slotMap.values()).sort((left, right) => {
+                                            return toMinutes(left.startTime) - toMinutes(right.startTime);
+                                          });
+
+                                          const daySet = new Set(semesterGroup.assignments.map((a) => a.day));
+                                          const orderedDays = DAY_ORDER.filter((day) => daySet.has(day));
+                                          const unknownDays = Array.from(daySet).filter((day) => !DAY_ORDER.includes(day));
+                                          const allDays = [...orderedDays, ...unknownDays];
+
+                                          const slotAssignments = new Map<string, GeneratedAssignment[]>();
+                                          for (const assignment of semesterGroup.assignments) {
+                                            const slotKey = `${assignment.startTime}::${assignment.endTime}`;
+                                            const cellKey = `${assignment.day}::${slotKey}`;
+                                            const existing = slotAssignments.get(cellKey) || [];
+                                            slotAssignments.set(cellKey, [...existing, assignment]);
+                                          }
+
+                                          return (
+                                            <div className="overflow-x-auto rounded-md border border-border">
+                                              <Table>
+                                                <TableHeader>
+                                                  <TableRow className="hover:bg-transparent">
+                                                    <TableHead className="min-w-[110px]">Day</TableHead>
+                                                    {orderedSlots.map((slot) => {
+                                                      const key = `${slot.startTime}::${slot.endTime}`;
+                                                      return (
+                                                        <TableHead key={key} className="min-w-[180px] whitespace-normal">
+                                                          {slot.startTime} - {slot.endTime}
+                                                        </TableHead>
+                                                      );
+                                                    })}
+                                                  </TableRow>
+                                                </TableHeader>
+                                                <TableBody>
+                                                  {allDays.map((day) => (
+                                                    <TableRow key={day}>
+                                                      <TableCell className="align-top text-sm font-semibold text-slate-900 dark:text-slate-100">
+                                                        {day}
+                                                      </TableCell>
+                                                      {orderedSlots.map((slot) => {
+                                                        const slotKey = `${slot.startTime}::${slot.endTime}`;
+                                                        const cellKey = `${day}::${slotKey}`;
+                                                        const items = slotAssignments.get(cellKey) || [];
+
+                                                        return (
+                                                          <TableCell key={cellKey} className="align-top">
+                                                            {items.length === 0 ? (
+                                                              <span className="text-xs text-muted-foreground">-</span>
+                                                            ) : (
+                                                              <div className="space-y-2">
+                                                                {items.map((item) => (
+                                                                  <div key={item.assignmentId} className="rounded-md border border-border/80 bg-muted/40 p-2">
+                                                                    <p className="text-xs font-semibold text-slate-900 dark:text-slate-100">
+                                                                      {item.subjectName}
+                                                                    </p>
+                                                                    <p className="text-[11px] text-slate-700 dark:text-slate-300">
+                                                                      {item.batchName || item.batchId}
+                                                                    </p>
+                                                                    <p className="text-[11px] text-slate-700 dark:text-slate-300">{item.teacherName}</p>
+                                                                    <p className="text-[11px] text-slate-600 dark:text-slate-400">{item.roomName}</p>
+                                                                  </div>
+                                                                ))}
+                                                              </div>
+                                                            )}
+                                                          </TableCell>
+                                                        );
+                                                      })}
+                                                    </TableRow>
+                                                  ))}
+                                                </TableBody>
+                                              </Table>
+                                            </div>
+                                          );
+                                        })()}
+                                      </TabsContent>
+                                    ))}
+                                  </Tabs>
+                                </CardContent>
+                              </Card>
+                            </TabsContent>
+                          ))}
+                        </Tabs>
                       )}
                     </CardContent>
                   </Card>

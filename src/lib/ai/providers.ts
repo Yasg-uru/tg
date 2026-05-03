@@ -130,26 +130,35 @@ async function callOpenAI(request: StructuredAiRequest): Promise<string> {
 
 export async function generateStructuredJson<T>(
   request: StructuredAiRequest,
-  fallback: T
+  fallback: T,
+  preferredProviders?: Array<'gemini' | 'openai' | 'heuristic'>
 ): Promise<StructuredAiResponse<T>> {
-  const providers: Array<
-    [StructuredAiResponse<T>['provider'], string, () => Promise<string>]
-  > = [];
+  const order = preferredProviders && preferredProviders.length > 0
+    ? preferredProviders
+    : ['gemini', 'openai'];
 
-  if (process.env.GEMINI_API_KEY) {
-    providers.push([
-      'gemini',
-      process.env.GEMINI_MODEL || 'gemini-2.5-pro',
-      () => callGemini(request),
-    ]);
-  }
+  const providers: Array<[
+    StructuredAiResponse<T>['provider'],
+    string,
+    () => Promise<string>
+  ]> = [];
 
-  if (process.env.OPENAI_API_KEY) {
-    providers.push([
-      'openai',
-      process.env.OPENAI_MODEL || 'gpt-4.1-mini',
-      () => callOpenAI(request),
-    ]);
+  for (const p of order) {
+    if (p === 'gemini' && process.env.GEMINI_API_KEY) {
+      providers.push([
+        'gemini',
+        process.env.GEMINI_MODEL || 'gemini-2.5-pro',
+        () => callGemini(request),
+      ]);
+    }
+
+    if (p === 'openai' && process.env.OPENAI_API_KEY) {
+      providers.push([
+        'openai',
+        process.env.OPENAI_MODEL || 'gpt-4.1-mini',
+        () => callOpenAI(request),
+      ]);
+    }
   }
 
   for (const [provider, model, execute] of providers) {
@@ -167,6 +176,7 @@ export async function generateStructuredJson<T>(
     }
   }
 
+  // Fallback deterministic heuristic
   return {
     provider: 'heuristic',
     model: 'deterministic-fallback',
