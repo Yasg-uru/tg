@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Progress } from '@/components/ui/progress';
 import { Badge } from '@/components/ui/badge';
+import { Checkbox } from '@/components/ui/checkbox';
 import { ThemeToggle } from '@/components/theme-toggle';
 import {
   Table,
@@ -242,7 +243,7 @@ export function TimetableDashboard() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-white via-slate-50 to-slate-100 dark:from-slate-950 dark:via-slate-900 dark:to-slate-950 p-4 sm:p-8 transition-colors">
+    <div className="min-h-screen bg-background p-4 sm:p-8 transition-colors">
       <div className="mx-auto max-w-6xl space-y-8">
         {/* Header */}
         <div className="flex items-start justify-between gap-4">
@@ -277,7 +278,7 @@ export function TimetableDashboard() {
 
           {/* Upload Tab */}
           <TabsContent value="upload" className="space-y-4">
-            <Card>
+            <Card className="border-border bg-card">
               <CardHeader>
                 <CardTitle>Upload CSV Files</CardTitle>
                 <CardDescription>
@@ -286,7 +287,7 @@ export function TimetableDashboard() {
               </CardHeader>
               <CardContent className="space-y-4">
                 <div 
-                  className="rounded-lg border-2 border-dashed border-slate-300 dark:border-slate-600 p-8 text-center hover:border-emerald-500/50 dark:hover:border-emerald-500/50 transition bg-slate-50 dark:bg-slate-900/50"
+                  className="rounded-lg border-2 border-dashed border-border p-8 text-center bg-muted/40 hover:border-primary/50 transition"
                   onDragOver={(e) => {
                     e.preventDefault();
                     e.stopPropagation();
@@ -301,9 +302,9 @@ export function TimetableDashboard() {
                     }
                   }}
                 >
-                  <Upload className="mx-auto h-12 w-12 text-slate-500 dark:text-slate-400 mb-3" />
-                  <p className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Drag and drop CSV files here</p>
-                  <p className="text-xs text-slate-500 dark:text-slate-400 mb-4">or click to browse</p>
+                  <Upload className="mx-auto h-12 w-12 text-muted-foreground mb-3" />
+                  <p className="text-sm font-medium text-foreground mb-2">Drag and drop CSV files here</p>
+                  <p className="text-xs text-muted-foreground mb-4">or click to browse</p>
                   <Input
                     type="file"
                     multiple
@@ -323,11 +324,11 @@ export function TimetableDashboard() {
                 {uploadProgress > 0 && (
                   <div className="space-y-2">
                     <Progress value={uploadProgress} className="h-2" />
-                    <p className="text-xs text-slate-500 dark:text-slate-400">{uploadProgress}% uploaded</p>
+                    <p className="text-xs text-muted-foreground">{uploadProgress}% uploaded</p>
                   </div>
                 )}
 
-                <div className="text-xs text-slate-600 dark:text-slate-400 space-y-1">
+                <div className="text-xs text-muted-foreground space-y-1">
                   <p>• batches.csv - Batch information</p>
                   <p>• subjects.csv - Subject details and credits</p>
                   <p>• teachers.csv - Teacher availability and limits</p>
@@ -361,11 +362,10 @@ export function TimetableDashboard() {
                           key={batch._id}
                           className="flex items-center gap-3 p-3 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer transition"
                         >
-                          <input
-                            type="checkbox"
+                          <Checkbox
                             checked={selectedBatches.includes(batch.batchId)}
-                            onChange={(e) => {
-                              if (e.target.checked) {
+                            onCheckedChange={(checked) => {
+                              if (checked) {
                                 setSelectedBatches([...selectedBatches, batch.batchId]);
                               } else {
                                 setSelectedBatches(
@@ -373,7 +373,6 @@ export function TimetableDashboard() {
                                 );
                               }
                             }}
-                            className="rounded"
                           />
                           <div className="flex-1 min-w-0">
                             <p className="text-sm font-medium text-slate-900 dark:text-white truncate">{batch.batchName}</p>
@@ -399,7 +398,7 @@ export function TimetableDashboard() {
                     <div className="space-y-2">
                       {['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'].map((day) => (
                         <label key={day} className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
-                          <input type="checkbox" defaultChecked className="rounded" />
+                          <Checkbox defaultChecked />
                           {day}
                         </label>
                       ))}

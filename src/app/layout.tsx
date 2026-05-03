@@ -4,6 +4,7 @@ import { Geist } from "next/font/google";
 import { cn } from "@/lib/utils";
 import { ThemeProvider } from "@/components/theme-provider";
 import { Toaster } from "@/components/ui/sonner";
+import { Navigation } from "@/components/navigation";
 
 const geist = Geist({subsets:['latin'],variable:'--font-sans'});
 
@@ -19,8 +20,9 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" className={cn("font-sans", geist.variable)} suppressHydrationWarning>
-      <body>
+      <body className="min-h-screen bg-background text-foreground antialiased">
         <ThemeProvider>
+          <Navigation />
           {children}
           <Toaster />
         </ThemeProvider>
