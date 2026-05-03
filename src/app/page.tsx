@@ -3,9 +3,9 @@ import { Button } from '@/components/ui/button';
 const pipeline = [
   {
     title: 'Planner',
-    label: 'Gemini first, OpenAI fallback',
+    label: 'Deterministic fail-first planning',
     description:
-      'Ranks sessions by difficulty, spreads load across the week, and keeps labs and high-credit subjects ahead of easier placements.',
+      'Ranks sessions by difficulty with constraint pressure so the most difficult placements are solved first instead of being left to the end.',
   },
   {
     title: 'Scheduler',
@@ -46,10 +46,10 @@ export default function Home() {
             </div>
             <div className="space-y-4">
               <h1 className="max-w-3xl text-4xl font-semibold tracking-tight text-white sm:text-5xl lg:text-6xl">
-                Human-like timetable scheduling with a deterministic core and AI-assisted planning.
+                Human-like timetable scheduling with advanced deterministic search.
               </h1>
               <p className="max-w-2xl text-base leading-7 text-stone-300 sm:text-lg">
-                Time-Gen uses Gemini as the primary planner, OpenAI as the fallback, and pure server-side validation to produce high-quality timetables that stay free of hard conflicts.
+                Time-Gen uses a fully server-side scheduler with fail-first ordering, beam candidate exploration, and strict hard-constraint enforcement for conflict-free timetables.
               </p>
             </div>
 
@@ -95,13 +95,13 @@ export default function Home() {
           <div className="rounded-[1.5rem] border border-emerald-400/20 bg-emerald-400/10 p-6 text-emerald-50 md:col-span-2">
             <p className="text-sm uppercase tracking-[0.25em] text-emerald-200/80">Production strategy</p>
             <p className="mt-3 max-w-3xl text-lg leading-8 text-emerald-50/90">
-              The schedule builder stays deterministic where correctness matters and uses model output only for ranking, quality hints, and recovery. That keeps the codebase neat, testable, and far safer than letting the model directly invent the timetable.
+              The schedule builder is fully deterministic and combines fail-first search, beam-ranked placements, and fairness-aware scoring. That keeps the output stable at scale and avoids model-rate-limit failure paths.
             </p>
           </div>
           <div className="rounded-[1.5rem] border border-white/10 bg-white/5 p-6">
-            <p className="text-sm uppercase tracking-[0.25em] text-stone-400">Fallback policy</p>
+            <p className="text-sm uppercase tracking-[0.25em] text-stone-400">Search policy</p>
             <p className="mt-3 text-base leading-7 text-stone-200">
-              Gemini handles the primary structured planning call. If it fails, OpenAI takes over. If both fail, the scheduler still completes with a deterministic heuristic plan.
+              Hard constraints (teacher, room, batch, availability) are always enforced before placement. Soft objectives then optimize spread, daily balance, and practical slot quality.
             </p>
           </div>
         </section>

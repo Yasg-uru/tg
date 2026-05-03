@@ -54,8 +54,20 @@ export async function generateTimetable(
     : batches;
 
   if (targetBatches.length === 0) {
-    throw new Error('No batches were found for timetable generation');
+    const availableBatchIds = batches.map(b => b.batchId).join(', ');
+    const requestedIds = request.batchIds?.join(', ') || 'none';
+    throw new Error(
+      `No batches were found for timetable generation. ` +
+      `Requested: [${requestedIds}], Available: [${availableBatchIds}]`
+    );
   }
+
+  logger.info(`Generating timetable for ${targetBatches.length} batch(es)`, {
+    batchIds: targetBatches.map(b => b.batchId),
+    totalSubjects: subjects.length,
+    totalTeachers: teachers.length,
+    totalRooms: rooms.length,
+  });
 
   // Delegate to TimetableGenerator
   const generator = new TimetableGenerator();

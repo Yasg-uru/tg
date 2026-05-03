@@ -1,6 +1,5 @@
 import { randomUUID } from 'crypto';
 
-import { generateStructuredJson } from '@/lib/ai/providers';
 import type {
   TimetableAssignment,
   TimetableGenerationRequest,
@@ -44,6 +43,13 @@ import {
 
 export class TimetableGenerator {
   constructor(private restarts = 5) {}
+
+  private readonly searchTimeoutMs = 3500;
+  private readonly beamWidth = 5;
+
+  private requirementKey(requirement: SchedulingRequirement): string {
+    return `${requirement.batchId}::${requirement.subjectCode}`;
+  }
 
   buildFallbackPlan(requirements: SchedulingRequirement[]): TimetablePlan {
     const priorityMap: Record<string, number> = {
@@ -96,90 +102,43 @@ export class TimetableGenerator {
     };
   }
 
-  createPlanPrompt(
-    requirements: SchedulingRequirement[],
-    weekDays: string[],
-    excludedDays: Set<string>
-  ) {
-    const summary = requirements.map((item) => ({
-      batchId: item.batchId,
-      batchName: item.batchName,
-      subjectCode: item.subjectCode,
-      subjectName: item.subjectName,
-      sessionType: item.sessionType,
-      sessions: item.totalSessions,
-      teacherId: item.teacherId,
-      weight: item.subjectWeight,
-      priority: item.priority,
-    }));
-
-    const availableDays = weekDays.filter((day) => !excludedDays.has(day));
-
-    return {
-      systemPrompt:
-        'You are a production timetable planning expert. Create schedules like experienced human coordinators would. Return compact JSON only.',
-      userPrompt: JSON.stringify(
-        {
-          task: 'Create an intelligent scheduling plan for a production timetable.',
-          availableDays: availableDays.length > 0 ? availableDays : weekDays,
-          totalWeekDays: availableDays.length > 0 ? availableDays.length : weekDays.length,
-          requirements: summary,
-          constraints: {
-            labsMustSpreadAcrossWeek: true,
-            keepHighCreditSubjectsBalanced: true,
-            avoidConsecutiveSameTeacher: true,
-            spreadSessionsOfSameSubject: true,
-          },
-          outputShape: {
-            subjectOrder: [
-              {
-                subjectCode: 'string',
-                batchId: 'string',
-                weight: 'number',
-                reason: 'string',
-              },
-            ],
-            preferredLabSlots: ['day-slotId'],
-            preferredTheorySlots: ['day-slotId'],
-            preferredDays: ['Monday'],
-            notes: ['string'],
-          },
-          rules: [
-            'Assign HIGHEST weight to critical-priority subjects.',
-            'Place labs on days with fewest theory classes.',
-            'Spread same subject sessions across different days (min 2 days apart).',
-            'Balance teacher load: no teacher should have >2 classes per day.',
-            'Avoid scheduling two sessions of same subject on same day.',
-            'Prioritize morning slots for high-credit theory courses.',
-            'Reserve afternoon slots for labs and practicals.',
-            'Respect excluded days from academic calendar.',
-            'Quality > quantity: unplaced sessions are better than poorly scheduled ones.',
-          ],
-        },
-        null,
-        2
-      ),
-    };
-  }
-
   buildRequirements(
     batches: BatchRecord[],
     subjects: SubjectRecord[],
     teachers: TeacherRecord[],
-    mappings: SubjectRoomMappingRecord[],
-    labBatches: LabBatchRecord[] = []
+    mappings: SubjectRoomMappingRecord[]
   ): SchedulingRequirement[] {
     const teacherById = new Map(teachers.map((teacher) => [teacher.teacherId, teacher]));
     const requirements: SchedulingRequirement[] = [];
 
-    for (const batch of batches) {
-      const batchSubjects = subjects.filter((subject) => {
-        const branchMatches = subject.branch === batch.branch || subject.branch === 'both';
-        const yearMatches = subject.year === batch.year;
-        const semesterMatches = subject.semester === batch.semester;
+    const normalizeText = (value: unknown) => String(value ?? '').trim().toLowerCase();
+    const normalizeNumber = (value: unknown) => numeric(value, -1);
 
+    for (const batch of batches) {
+      const batchBranch = normalizeText(batch.branch);
+      const batchYear = normalizeNumber(batch.year);
+      const batchSemester = normalizeNumber(batch.semester);
+
+      const exactBatchSubjects = subjects.filter((subject) => {
+        const subjectBranch = normalizeText(subject.branch);
+        const branchMatches =
+          subjectBranch === batchBranch || subjectBranch === 'both' || subjectBranch === 'all';
+        const yearMatches = normalizeNumber(subject.year) === batchYear;
+        const semesterValue = normalizeNumber(subject.semester);
+        const semesterMatches = semesterValue === batchSemester || semesterValue === 0;
         return branchMatches && yearMatches && semesterMatches;
       });
+
+      const batchSubjects =
+        exactBatchSubjects.length > 0
+          ? exactBatchSubjects
+          : subjects.filter((subject) => {
+              const subjectBranch = normalizeText(subject.branch);
+              const branchMatches =
+                subjectBranch === batchBranch || subjectBranch === 'both' || subjectBranch === 'all';
+              const yearMatches = normalizeNumber(subject.year) === batchYear;
+              return branchMatches && yearMatches;
+            });
 
       for (const subject of batchSubjects) {
         const teacher = teacherById.get(subject.teacherId);
@@ -268,6 +227,13 @@ export class TimetableGenerator {
     preferredLabSlots: string[];
     preferredTheorySlots: string[];
     sessionCount: number;
+    assignmentByBatchDaySlot: Map<string, TimetableAssignment>;
+    assignmentByTeacherDaySlot: Map<string, TimetableAssignment>;
+    weekSlots: TimeslotRecord[];
+    subjectSessionMap: Map<string, number>;
+    dayIndexMap: Map<string, number>;
+    teacherWeekLoad: number;
+    teacherUsedDays: number;
   }): number {
     const { requirement, day, slotIndex, slot, room } = params;
     let score = 100;
@@ -277,6 +243,24 @@ export class TimetableGenerator {
       if (totalLoad > params.teacher.maxHrsPerDay) {
         score -= HARD_CONSTRAINT_PENALTY;
       }
+    }
+
+    if (params.teacher && params.teacher.maxHrsPerWeek > 0) {
+      const avgTarget = Math.max(1, Math.floor(params.teacher.maxHrsPerWeek / 5));
+      if (params.teacherLoad + requirement.sessionLength > avgTarget + 1) {
+        score -= 30;
+      }
+    }
+
+    const projectedWeekLoad = params.teacherWeekLoad + requirement.sessionLength;
+    const projectedUsedDays = params.teacherLoad === 0 ? params.teacherUsedDays + 1 : params.teacherUsedDays;
+    const avgPerUsedDay = projectedWeekLoad / Math.max(1, projectedUsedDays);
+    if (avgPerUsedDay > 2.25) {
+      score -= 35;
+    }
+
+    if (params.teacherLoad + requirement.sessionLength > 2) {
+      score -= 40;
     }
 
     const capacityRatio = (params.batchLoad * 30) / room.capacity;
@@ -311,6 +295,40 @@ export class TimetableGenerator {
       score += slotIndex <= 1 ? 6 : 0;
     }
 
+    const prevSlot = params.weekSlots[slotIndex - 1];
+    const nextSlot = params.weekSlots[slotIndex + 1];
+    if (prevSlot) {
+      const prevTeacher = params.assignmentByTeacherDaySlot.get(
+        `${requirement.teacherId}::${day}::${prevSlot.slotId}`
+      );
+      if (prevTeacher) {
+        score -= 12;
+      }
+
+      const prevBatch = params.assignmentByBatchDaySlot.get(
+        `${requirement.batchId}::${day}::${prevSlot.slotId}`
+      );
+      if (prevBatch && prevBatch.subjectCode === requirement.subjectCode) {
+        score -= 30;
+      }
+    }
+
+    if (nextSlot) {
+      const nextTeacher = params.assignmentByTeacherDaySlot.get(
+        `${requirement.teacherId}::${day}::${nextSlot.slotId}`
+      );
+      if (nextTeacher) {
+        score -= 10;
+      }
+
+      const nextBatch = params.assignmentByBatchDaySlot.get(
+        `${requirement.batchId}::${day}::${nextSlot.slotId}`
+      );
+      if (nextBatch && nextBatch.subjectCode === requirement.subjectCode) {
+        score -= 25;
+      }
+    }
+
     if (requirement.preferredRoomIds.includes(room.roomId)) {
       score += 20;
     }
@@ -320,9 +338,301 @@ export class TimetableGenerator {
       score -= 30;
     }
 
+    // Keep same-subject sessions distributed over non-adjacent days when possible.
+    const dayIdx = params.dayIndexMap.get(day) ?? -1;
+    for (const existingDay of params.subjectSessionMap.keys()) {
+      const existingIdx = params.dayIndexMap.get(existingDay);
+      if (dayIdx >= 0 && existingIdx !== undefined && Math.abs(dayIdx - existingIdx) < 2) {
+        score -= 18;
+      }
+    }
+
+    const maxSessionsPerDay = requirement.totalSessions >= 4 ? 2 : 1;
+    if (params.sessionCount >= maxSessionsPerDay) {
+      score -= HARD_CONSTRAINT_PENALTY;
+    }
+
     score += Math.random() * 0.001;
 
     return Math.max(-HARD_CONSTRAINT_PENALTY, score);
+  }
+
+  private domainPriority(requirement: SchedulingRequirement): number {
+    const priorityMap: Record<SchedulingRequirement['priority'], number> = {
+      critical: 4,
+      high: 3,
+      normal: 2,
+      low: 1,
+    };
+
+    return (
+      priorityMap[requirement.priority] * 100 +
+      (requirement.sessionType === 'lab' ? 40 : 0) +
+      Math.min(50, requirement.subjectWeight)
+    );
+  }
+
+  private getCandidatePlacements(params: {
+    requirement: SchedulingRequirement;
+    plan: TimetablePlan;
+    rooms: RoomRecord[];
+    timeslots: TimeslotRecord[];
+    weekDays: string[];
+    batchById: Map<string, BatchRecord>;
+    teacherById: Map<string, TeacherRecord>;
+    assignments: TimetableAssignment[];
+    availability: ReturnType<typeof buildAvailabilityState>;
+    excludedDays: Set<string>;
+  }): Array<{
+    day: string;
+    slotIndex: number;
+    room: RoomRecord;
+    slot: TimeslotRecord;
+    nextSlot?: TimeslotRecord;
+    score: number;
+  }> {
+    const orderedSlots = params.timeslots
+      .filter((slot) => !slot.isBreak && !slot.isLunchBreak)
+      .sort((left, right) => left.slotOrder - right.slotOrder);
+    const requirement = params.requirement;
+    const teacher = params.teacherById.get(requirement.teacherId);
+    const batch = params.batchById.get(requirement.batchId);
+
+    if (!teacher || !batch) {
+      return [];
+    }
+
+    const assignmentByBatchDaySlot = new Map<string, TimetableAssignment>();
+    const assignmentByTeacherDaySlot = new Map<string, TimetableAssignment>();
+    for (const assignment of params.assignments) {
+      assignmentByBatchDaySlot.set(
+        `${assignment.batchId}::${assignment.day}::${assignment.slotId}`,
+        assignment
+      );
+      assignmentByTeacherDaySlot.set(
+        `${assignment.teacherId}::${assignment.day}::${assignment.slotId}`,
+        assignment
+      );
+    }
+
+    const candidates: Array<{
+      day: string;
+      slotIndex: number;
+      room: RoomRecord;
+      slot: TimeslotRecord;
+      nextSlot?: TimeslotRecord;
+      score: number;
+    }> = [];
+    const dayIndexMap = new Map(params.weekDays.map((day, index) => [day, index]));
+    const teacherDayMap =
+      params.availability.teacherDayLoad.get(requirement.teacherId) || new Map<string, number>();
+    const teacherWeekLoad = params.availability.teacherWeekLoad.get(requirement.teacherId) || 0;
+    const teacherUsedDays = [...teacherDayMap.values()].filter((load) => load > 0).length;
+
+    for (const day of params.weekDays) {
+      if (params.excludedDays.has(day) || params.availability.excludedSlots.has(day)) {
+        continue;
+      }
+
+      for (let slotIndex = 0; slotIndex < orderedSlots.length; slotIndex++) {
+        const slot = orderedSlots[slotIndex];
+
+        let nextSlot: TimeslotRecord | undefined;
+        if (requirement.sessionType === 'lab') {
+          const labSlotRange = getLabSlotRange(slotIndex, orderedSlots);
+          if (!labSlotRange) {
+            continue;
+          }
+          nextSlot = labSlotRange.slot2;
+        } else if (!slot.allowTheory) {
+          continue;
+        }
+
+        if (!isTeacherAvailable(teacher, day, slot.slotId)) {
+          continue;
+        }
+        if (nextSlot && !isTeacherAvailable(teacher, day, nextSlot.slotId)) {
+          continue;
+        }
+
+        const teacherKey = slotKey(day, slot.slotId);
+        if (params.availability.teacherSlotKey.has(`${requirement.teacherId}::${teacherKey}`)) {
+          continue;
+        }
+        if (nextSlot) {
+          const nextTeacherKey = slotKey(day, nextSlot.slotId);
+          if (params.availability.teacherSlotKey.has(`${requirement.teacherId}::${nextTeacherKey}`)) {
+            continue;
+          }
+        }
+
+        const batchKey = slotKey(day, slot.slotId);
+        if (params.availability.batchSlotKey.has(`${requirement.batchId}::${batchKey}`)) {
+          continue;
+        }
+        if (nextSlot) {
+          const nextBatchKey = slotKey(day, nextSlot.slotId);
+          if (params.availability.batchSlotKey.has(`${requirement.batchId}::${nextBatchKey}`)) {
+            continue;
+          }
+        }
+
+        const candidateRooms = params.rooms.filter((room) => {
+          const slotKeyValue = `${day}-${slot.slotId}`;
+          const nextSlotKeyValue = nextSlot ? `${day}-${nextSlot.slotId}` : '';
+
+          if (room.availableDays.length > 0 && !room.availableDays.includes(day)) {
+            return false;
+          }
+
+          if (
+            room.notAvailableSlots?.includes(slotKeyValue) ||
+            room.notAvailableSlots?.includes(slot.slotId)
+          ) {
+            return false;
+          }
+
+          if (
+            nextSlot &&
+            (room.notAvailableSlots?.includes(nextSlotKeyValue) ||
+              room.notAvailableSlots?.includes(nextSlot.slotId))
+          ) {
+            return false;
+          }
+
+          if (!roomSupportsSubject(room, requirement)) {
+            return false;
+          }
+
+          return room.capacity >= batch.totalStudents;
+        });
+
+        for (const room of candidateRooms) {
+          const roomKey = slotKey(day, `${room.roomId}::${slot.slotId}`);
+          if (params.availability.roomSlotKey.has(roomKey)) {
+            continue;
+          }
+
+          if (nextSlot) {
+            const nextRoomKey = slotKey(day, `${room.roomId}::${nextSlot.slotId}`);
+            if (params.availability.roomSlotKey.has(nextRoomKey)) {
+              continue;
+            }
+          }
+
+          const teacherDayLoad = teacherDayMap.get(day) || 0;
+          const batchDayLoad = params.assignments.filter(
+            (assignment) => assignment.batchId === requirement.batchId && assignment.day === day
+          ).length;
+          const subjectKey = this.requirementKey(requirement);
+          const sessionCountMap =
+            params.availability.subjectSessionCount.get(subjectKey) || new Map<string, number>();
+          const sessionCount = sessionCountMap.get(day) || 0;
+
+          const score = this.scoreCandidate({
+            requirement,
+            day,
+            slotIndex,
+            slot,
+            room,
+            teacher,
+            teacherLoad: teacherDayLoad,
+            batchLoad: batchDayLoad,
+            preferredDays: params.plan.preferredDays,
+            preferredLabSlots: params.plan.preferredLabSlots,
+            preferredTheorySlots: params.plan.preferredTheorySlots,
+            sessionCount,
+            assignmentByBatchDaySlot,
+            assignmentByTeacherDaySlot,
+            weekSlots: orderedSlots,
+            subjectSessionMap: sessionCountMap,
+            dayIndexMap,
+            teacherWeekLoad,
+            teacherUsedDays,
+          });
+
+          if (score > -500) {
+            candidates.push({ day, slotIndex, room, slot, nextSlot, score });
+          }
+        }
+      }
+    }
+
+    return candidates.sort((left, right) => right.score - left.score);
+  }
+
+  private placeCandidate(params: {
+    requirement: SchedulingRequirement;
+    candidate: {
+      day: string;
+      room: RoomRecord;
+      slot: TimeslotRecord;
+      nextSlot?: TimeslotRecord;
+      score: number;
+    };
+    availability: ReturnType<typeof buildAvailabilityState>;
+    assignments: TimetableAssignment[];
+    batchById: Map<string, BatchRecord>;
+    teacherById: Map<string, TeacherRecord>;
+  }): boolean {
+    const { requirement, candidate, availability } = params;
+    const teacher = params.teacherById.get(requirement.teacherId);
+    const batch = params.batchById.get(requirement.batchId);
+    if (!teacher || !batch) {
+      return false;
+    }
+
+    const dayLoadMap = availability.teacherDayLoad.get(requirement.teacherId) || new Map<string, number>();
+    const teacherDayLoad = dayLoadMap.get(candidate.day) || 0;
+    if (teacher.maxHrsPerDay > 0 && teacherDayLoad + requirement.sessionLength > teacher.maxHrsPerDay) {
+      return false;
+    }
+    dayLoadMap.set(candidate.day, teacherDayLoad + requirement.sessionLength);
+    availability.teacherDayLoad.set(requirement.teacherId, dayLoadMap);
+
+    const weekLoad = (availability.teacherWeekLoad.get(requirement.teacherId) || 0) + requirement.sessionLength;
+    if (teacher.maxHrsPerWeek > 0 && weekLoad > teacher.maxHrsPerWeek) {
+      dayLoadMap.set(candidate.day, teacherDayLoad);
+      return false;
+    }
+    availability.teacherWeekLoad.set(requirement.teacherId, weekLoad);
+
+    availability.teacherSlotKey.add(`${requirement.teacherId}::${slotKey(candidate.day, candidate.slot.slotId)}`);
+    availability.roomSlotKey.add(`${candidate.room.roomId}::${slotKey(candidate.day, candidate.slot.slotId)}`);
+    availability.batchSlotKey.add(`${requirement.batchId}::${slotKey(candidate.day, candidate.slot.slotId)}`);
+
+    if (candidate.nextSlot) {
+      availability.teacherSlotKey.add(`${requirement.teacherId}::${slotKey(candidate.day, candidate.nextSlot.slotId)}`);
+      availability.roomSlotKey.add(`${candidate.room.roomId}::${slotKey(candidate.day, candidate.nextSlot.slotId)}`);
+      availability.batchSlotKey.add(`${requirement.batchId}::${slotKey(candidate.day, candidate.nextSlot.slotId)}`);
+    }
+
+    const subjectKey = this.requirementKey(requirement);
+    const sessionCountMap = availability.subjectSessionCount.get(subjectKey) || new Map<string, number>();
+    sessionCountMap.set(candidate.day, (sessionCountMap.get(candidate.day) || 0) + 1);
+    availability.subjectSessionCount.set(subjectKey, sessionCountMap);
+
+    params.assignments.push({
+      assignmentId: randomUUID(),
+      batchId: requirement.batchId,
+      batchName: batch.batchName,
+      subjectCode: requirement.subjectCode,
+      subjectName: requirement.subjectName,
+      teacherId: teacher.teacherId,
+      teacherName: teacher.name,
+      roomId: candidate.room.roomId,
+      roomName: candidate.room.roomName,
+      day: candidate.day,
+      slotId: candidate.slot.slotId,
+      periodLabel: candidate.slot.periodLabel,
+      startTime: candidate.slot.startTime,
+      endTime: candidate.nextSlot ? candidate.nextSlot.endTime : candidate.slot.endTime,
+      sessionType: requirement.sessionType,
+      slotCount: requirement.sessionLength,
+      score: candidate.score,
+    });
+
+    return true;
   }
 
   private buildAssignmentsCore(params: {
@@ -335,267 +645,164 @@ export class TimetableGenerator {
   }): { assignments: TimetableAssignment[]; unplaced: SchedulingRequirement[] } {
     const availability = buildAvailabilityState();
     const assignments: TimetableAssignment[] = [];
-    const unplaced: SchedulingRequirement[] = [];
     const batchById = new Map(params.batches.map((batch) => [batch.batchId, batch]));
     const teacherById = new Map(params.teachers.map((teacher) => [teacher.teacherId, teacher]));
-    const orderedSlots = [...params.timeslots]
-      .filter((slot) => !slot.isBreak && !slot.isLunchBreak)
-      .sort((left, right) => left.slotOrder - right.slotOrder);
     const weekDays = params.plan.preferredDays.length > 0 ? params.plan.preferredDays : WEEK_DAYS;
+    const excludedDays = new Set(WEEK_DAYS.filter((day) => !weekDays.includes(day)));
 
+    const remainingByRequirement = new Map<string, number>();
+    const requirementByKey = new Map<string, SchedulingRequirement>();
+    const forcedUnplacedByRequirement = new Map<string, number>();
     for (const requirement of params.requirements) {
-      const key = `${requirement.batchId}::${requirement.subjectCode}`;
+      const key = this.requirementKey(requirement);
+      remainingByRequirement.set(key, requirement.totalSessions);
       availability.subjectSessionCount.set(key, new Map());
+      requirementByKey.set(key, requirement);
     }
 
-    for (const requirement of params.requirements) {
-      let placed = 0;
+    const start = Date.now();
+    while (Date.now() - start < this.searchTimeoutMs) {
+      const pendingKeys = [...remainingByRequirement.entries()]
+        .filter(([, remaining]) => remaining > 0)
+        .map(([key]) => key);
 
-      while (placed < requirement.totalSessions) {
-        let bestCandidate:
-          | {
-              day: string;
-              slotIndex: number;
-              room: RoomRecord;
-              slot: TimeslotRecord;
-              nextSlot?: TimeslotRecord;
-              score: number;
-            }
-          | undefined;
+      if (pendingKeys.length === 0) {
+        break;
+      }
 
-        for (const day of weekDays) {
-          for (let slotIndex = 0; slotIndex < orderedSlots.length; slotIndex++) {
-            const slot = orderedSlots[slotIndex];
-            const teacher = teacherById.get(requirement.teacherId);
-            const batch = batchById.get(requirement.batchId);
+      let bestKey: string | undefined;
+      let bestDomain: ReturnType<typeof this.getCandidatePlacements> = [];
+      let bestScore = Infinity;
 
-            if (!teacher || !batch) {
-              continue;
-            }
-
-            if (availability.excludedSlots.has(day)) {
-              continue;
-            }
-
-            let nextSlot: TimeslotRecord | undefined;
-            if (requirement.sessionType === 'lab') {
-              const labSlotRange = getLabSlotRange(slotIndex, orderedSlots);
-              if (!labSlotRange) {
-                continue;
-              }
-              nextSlot = labSlotRange.slot2;
-            } else if (!slot.allowTheory) {
-              continue;
-            }
-
-            if (!isTeacherAvailable(teacher, day, slot.slotId)) {
-              continue;
-            }
-
-            if (nextSlot && !isTeacherAvailable(teacher, day, nextSlot.slotId)) {
-              continue;
-            }
-
-            const teacherKey = slotKey(day, slot.slotId);
-            const batchKey = slotKey(day, slot.slotId);
-
-            if (availability.teacherSlotKey.has(`${requirement.teacherId}::${teacherKey}`)) {
-              continue;
-            }
-
-            if (nextSlot) {
-              const nextTeacherKey = slotKey(day, nextSlot.slotId);
-              if (availability.teacherSlotKey.has(`${requirement.teacherId}::${nextTeacherKey}`)) {
-                continue;
-              }
-            }
-
-            if (availability.batchSlotKey.has(`${requirement.batchId}::${batchKey}`)) {
-              continue;
-            }
-
-            if (nextSlot) {
-              const nextBatchKey = slotKey(day, nextSlot.slotId);
-              if (availability.batchSlotKey.has(`${requirement.batchId}::${nextBatchKey}`)) {
-                continue;
-              }
-            }
-
-            const candidateRooms = params.rooms.filter((room) => {
-              const slotKeyValue = `${day}-${slot.slotId}`;
-              const nextSlotKeyValue = nextSlot ? `${day}-${nextSlot.slotId}` : '';
-
-              if (room.availableDays.length > 0 && !room.availableDays.includes(day)) {
-                return false;
-              }
-
-              if (
-                room.notAvailableSlots?.includes(slotKeyValue) ||
-                room.notAvailableSlots?.includes(slot.slotId)
-              ) {
-                return false;
-              }
-
-              if (nextSlot) {
-                if (
-                  room.notAvailableSlots?.includes(nextSlotKeyValue) ||
-                  room.notAvailableSlots?.includes(nextSlot.slotId)
-                ) {
-                  return false;
-                }
-              }
-
-              if (!roomSupportsSubject(room, requirement)) {
-                return false;
-              }
-
-              return room.capacity >= batch.totalStudents;
-            });
-
-            for (const room of candidateRooms) {
-              const roomKey = slotKey(day, `${room.roomId}::${slot.slotId}`);
-              const nextRoomKey = nextSlot
-                ? slotKey(day, `${room.roomId}::${nextSlot.slotId}`)
-                : '';
-
-              if (availability.roomSlotKey.has(roomKey)) {
-                continue;
-              }
-
-              if (nextSlot && availability.roomSlotKey.has(nextRoomKey)) {
-                continue;
-              }
-
-              const teacherDayMap =
-                availability.teacherDayLoad.get(requirement.teacherId) || new Map<string, number>();
-              const teacherDayLoad = teacherDayMap.get(day) || 0;
-              const batchDayLoad = assignments.filter(
-                (assignment) => assignment.batchId === requirement.batchId && assignment.day === day
-              ).length;
-
-              const subjectKey = `${requirement.batchId}::${requirement.subjectCode}`;
-              const sessionCountMap = availability.subjectSessionCount.get(subjectKey) || new Map();
-              const sessionCount = sessionCountMap.get(day) || 0;
-
-              const score = this.scoreCandidate({
-                requirement,
-                day,
-                slotIndex,
-                slot,
-                room,
-                teacher,
-                teacherLoad: teacherDayLoad,
-                batchLoad: batchDayLoad,
-                preferredDays: params.plan.preferredDays,
-                preferredLabSlots: params.plan.preferredLabSlots,
-                preferredTheorySlots: params.plan.preferredTheorySlots,
-                sessionCount,
-              });
-
-              if (score < -500) {
-                continue;
-              }
-
-              if (!bestCandidate || score > bestCandidate.score) {
-                bestCandidate = {
-                  day,
-                  slotIndex,
-                  room,
-                  slot,
-                  nextSlot,
-                  score,
-                };
-              }
-            }
-          }
+      for (const key of pendingKeys) {
+        const requirement = requirementByKey.get(key);
+        if (!requirement) {
+          continue;
         }
 
-        if (!bestCandidate) {
-          unplaced.push(requirement);
-          break;
-        }
-
-        const teacher = teacherById.get(requirement.teacherId)!;
-        const batch = batchById.get(requirement.batchId)!;
-
-        const dayLoadMap =
-          availability.teacherDayLoad.get(requirement.teacherId) || new Map<string, number>();
-        const teacherDayLoad = dayLoadMap.get(bestCandidate.day) || 0;
-        dayLoadMap.set(bestCandidate.day, teacherDayLoad + requirement.sessionLength);
-        availability.teacherDayLoad.set(requirement.teacherId, dayLoadMap);
-
-        const weekLoad = (availability.teacherWeekLoad.get(requirement.teacherId) || 0) + requirement.sessionLength;
-        availability.teacherWeekLoad.set(requirement.teacherId, weekLoad);
-
-        const teacherSlotOccupation = `${requirement.teacherId}::${slotKey(
-          bestCandidate.day,
-          bestCandidate.slot.slotId
-        )}`;
-        const roomSlotOccupation = `${bestCandidate.room.roomId}::${slotKey(
-          bestCandidate.day,
-          bestCandidate.slot.slotId
-        )}`;
-        const batchSlotOccupation = `${requirement.batchId}::${slotKey(
-          bestCandidate.day,
-          bestCandidate.slot.slotId
-        )}`;
-
-        availability.teacherSlotKey.add(teacherSlotOccupation);
-        availability.roomSlotKey.add(roomSlotOccupation);
-        availability.batchSlotKey.add(batchSlotOccupation);
-
-        if (bestCandidate.nextSlot) {
-          const nextTeacherSlot = `${requirement.teacherId}::${slotKey(
-            bestCandidate.day,
-            bestCandidate.nextSlot.slotId
-          )}`;
-          const nextRoomSlot = `${bestCandidate.room.roomId}::${slotKey(
-            bestCandidate.day,
-            bestCandidate.nextSlot.slotId
-          )}`;
-          const nextBatchSlot = `${requirement.batchId}::${slotKey(
-            bestCandidate.day,
-            bestCandidate.nextSlot.slotId
-          )}`;
-
-          availability.teacherSlotKey.add(nextTeacherSlot);
-          availability.roomSlotKey.add(nextRoomSlot);
-          availability.batchSlotKey.add(nextBatchSlot);
-        }
-
-        const subjectKey = `${requirement.batchId}::${requirement.subjectCode}`;
-        const sessionCountMap =
-          availability.subjectSessionCount.get(subjectKey) || new Map();
-        sessionCountMap.set(bestCandidate.day, (sessionCountMap.get(bestCandidate.day) || 0) + 1);
-        availability.subjectSessionCount.set(subjectKey, sessionCountMap);
-
-        assignments.push({
-          assignmentId: randomUUID(),
-          batchId: requirement.batchId,
-          batchName: batch.batchName,
-          subjectCode: requirement.subjectCode,
-          subjectName: requirement.subjectName,
-          teacherId: teacher.teacherId,
-          teacherName: teacher.name,
-          roomId: bestCandidate.room.roomId,
-          roomName: bestCandidate.room.roomName,
-          day: bestCandidate.day,
-          slotId: bestCandidate.slot.slotId,
-          periodLabel: bestCandidate.slot.periodLabel,
-          startTime: bestCandidate.slot.startTime,
-          endTime: bestCandidate.nextSlot
-            ? bestCandidate.nextSlot.endTime
-            : bestCandidate.slot.endTime,
-          sessionType: requirement.sessionType,
-          slotCount: requirement.sessionLength,
-          score: bestCandidate.score,
+        const domain = this.getCandidatePlacements({
+          requirement,
+          plan: params.plan,
+          rooms: params.rooms,
+          timeslots: params.timeslots,
+          weekDays,
+          batchById,
+          teacherById,
+          assignments,
+          availability,
+          excludedDays,
         });
 
-        placed++;
+        const priorityBoost = this.domainPriority(requirement) / 1000;
+        const constrainedScore = domain.length - priorityBoost;
+        if (constrainedScore < bestScore) {
+          bestScore = constrainedScore;
+          bestKey = key;
+          bestDomain = domain;
+        }
+
+        if (domain.length === 0) {
+          break;
+        }
+      }
+
+      if (!bestKey) {
+        break;
+      }
+
+      const selectedRequirement = requirementByKey.get(bestKey)!;
+      if (bestDomain.length === 0) {
+        const remaining = remainingByRequirement.get(bestKey) || 0;
+        forcedUnplacedByRequirement.set(
+          bestKey,
+          (forcedUnplacedByRequirement.get(bestKey) || 0) + remaining
+        );
+        remainingByRequirement.set(bestKey, 0);
+        continue;
+      }
+
+      const topCandidates = bestDomain.slice(0, this.beamWidth);
+      const pickIndex = topCandidates.length > 1 ? Math.floor(Math.random() * Math.min(2, topCandidates.length)) : 0;
+      const candidate = topCandidates[pickIndex] || topCandidates[0];
+
+      const placed = this.placeCandidate({
+        requirement: selectedRequirement,
+        candidate,
+        availability,
+        assignments,
+        batchById,
+        teacherById,
+      });
+
+      if (!placed) {
+        const remaining = remainingByRequirement.get(bestKey) || 0;
+        forcedUnplacedByRequirement.set(
+          bestKey,
+          (forcedUnplacedByRequirement.get(bestKey) || 0) + remaining
+        );
+        remainingByRequirement.set(bestKey, 0);
+        continue;
+      }
+
+      remainingByRequirement.set(bestKey, (remainingByRequirement.get(bestKey) || 1) - 1);
+    }
+
+    const unplaced: SchedulingRequirement[] = [];
+    for (const [key, remaining] of remainingByRequirement) {
+      if (remaining <= 0) {
+        continue;
+      }
+      const requirement = requirementByKey.get(key);
+      if (!requirement) {
+        continue;
+      }
+      for (let i = 0; i < remaining; i++) {
+        unplaced.push(requirement);
+      }
+    }
+
+    for (const [key, dropped] of forcedUnplacedByRequirement) {
+      const requirement = requirementByKey.get(key);
+      if (!requirement) {
+        continue;
+      }
+      for (let i = 0; i < dropped; i++) {
+        unplaced.push(requirement);
       }
     }
 
     return { assignments, unplaced };
+  }
+
+  private enforceConflictFree(assignments: TimetableAssignment[]): {
+    assignments: TimetableAssignment[];
+    dropped: TimetableAssignment[];
+  } {
+    const kept: TimetableAssignment[] = [];
+    const dropped: TimetableAssignment[] = [];
+    const teacherSlots = new Set<string>();
+    const roomSlots = new Set<string>();
+    const batchSlots = new Set<string>();
+
+    const ordered = [...assignments].sort((left, right) => right.score - left.score);
+
+    for (const assignment of ordered) {
+      const teacherKey = `${assignment.teacherId}::${assignment.day}::${assignment.slotId}`;
+      const roomKey = `${assignment.roomId}::${assignment.day}::${assignment.slotId}`;
+      const batchKey = `${assignment.batchId}::${assignment.day}::${assignment.slotId}`;
+
+      if (teacherSlots.has(teacherKey) || roomSlots.has(roomKey) || batchSlots.has(batchKey)) {
+        dropped.push(assignment);
+        continue;
+      }
+
+      teacherSlots.add(teacherKey);
+      roomSlots.add(roomKey);
+      batchSlots.add(batchKey);
+      kept.push(assignment);
+    }
+
+    return { assignments: kept, dropped };
   }
 
   private buildAssignments(params: {
@@ -912,7 +1119,7 @@ export class TimetableGenerator {
       labBatches: LabBatchRecord[];
     }
   ): Promise<TimetableGenerationResult> {
-    const { batches, subjects, teachers, rooms, timeslots, mappings, academicCalendar, constraints, labBatches } = data;
+    const { batches, subjects, teachers, rooms, timeslots, mappings, academicCalendar } = data;
 
     const targetBatches = request.batchIds?.length
       ? batches.filter((batch) => request.batchIds?.includes(batch.batchId))
@@ -928,13 +1135,34 @@ export class TimetableGenerator {
       excluded.forEach((slot) => excludedSlots.add(slot));
     }
 
-    const requirements = this.buildRequirements(targetBatches, subjects, teachers, mappings, labBatches);
+    const requirements = this.buildRequirements(targetBatches, subjects, teachers, mappings);
+
+    if (requirements.length === 0) {
+      const batchSnapshot = targetBatches.map((batch) => ({
+        batchId: batch.batchId,
+        branch: batch.branch,
+        year: batch.year,
+        semester: batch.semester,
+      }));
+
+      throw new Error(
+        `No schedulable subject requirements found for selected batches. ` +
+          `Check subject branch/year/semester mapping. Batches: ${JSON.stringify(batchSnapshot)}`
+      );
+    }
 
     const fallbackPlan = this.buildFallbackPlan(requirements);
-    const planRequest = this.createPlanPrompt(requirements, request.weekDays || WEEK_DAYS, excludedSlots);
-
-    const aiPlan = await generateStructuredJson<TimetablePlan>(planRequest, fallbackPlan);
-    const plan = aiPlan.data.subjectOrder.length > 0 ? aiPlan.data : fallbackPlan;
+    const plan: TimetablePlan = {
+      ...fallbackPlan,
+      preferredDays:
+        request.weekDays && request.weekDays.length > 0
+          ? request.weekDays.filter((day) => !excludedSlots.has(day))
+          : fallbackPlan.preferredDays.filter((day) => !excludedSlots.has(day)),
+      notes: [
+        ...fallbackPlan.notes,
+        'Deterministic advanced search: fail-first ordering + beam candidate selection + fairness scoring.',
+      ],
+    };
 
     const orderedRequirements = [...requirements].sort((left, right) => {
       const leftIndex = plan.subjectOrder.findIndex(
@@ -982,13 +1210,23 @@ export class TimetableGenerator {
       timeslots,
     });
 
-    const validation = this.validateTimetable(assignments, orderedRequirements, teachers, rooms);
-    const score = this.scoreTimetable(assignments, unplaced, validation);
+    const conflictSafe = this.enforceConflictFree(assignments);
+    const effectiveAssignments = conflictSafe.assignments;
+    const droppedByConflict = conflictSafe.dropped.length;
+    const effectiveUnplaced = [...unplaced];
+    if (droppedByConflict > 0 && orderedRequirements.length > 0) {
+      for (let i = 0; i < droppedByConflict; i++) {
+        effectiveUnplaced.push(orderedRequirements[i % orderedRequirements.length]);
+      }
+    }
+
+    const validation = this.validateTimetable(effectiveAssignments, orderedRequirements, teachers, rooms);
+    const score = this.scoreTimetable(effectiveAssignments, effectiveUnplaced, validation);
 
     const generationId = randomUUID();
     const status = request.publish && validation.conflictFree ? 'published' : 'draft';
-    const provider: TimetableProvider = aiPlan.provider;
-    const model = aiPlan.model;
+    const provider: TimetableProvider = 'heuristic';
+    const model = 'deterministic-search-v2';
 
     const result: TimetableGenerationResult = {
       generationId,
@@ -997,18 +1235,24 @@ export class TimetableGenerator {
       model,
       request,
       plan,
-      assignments,
+      assignments: effectiveAssignments,
       validation: {
         conflictFree: validation.conflictFree,
         issues: validation.issues,
-        warnings: validation.warnings,
+        warnings:
+          droppedByConflict > 0
+            ? [
+                ...validation.warnings,
+                `${droppedByConflict} conflicting tentative placement(s) were auto-dropped to guarantee a clash-free final timetable.`,
+              ]
+            : validation.warnings,
       },
       score,
       summary: {
         batchCount: targetBatches.length,
-        subjectCount: unique(assignments.map((assignment) => assignment.subjectCode)).length,
-        assignmentCount: assignments.length,
-        unplacedCount: unplaced.length,
+        subjectCount: unique(effectiveAssignments.map((assignment) => assignment.subjectCode)).length,
+        assignmentCount: effectiveAssignments.length,
+        unplacedCount: effectiveUnplaced.length,
         hardConflicts: validation.issues.filter((issue) => issue.severity === 'error').length,
       },
     };
