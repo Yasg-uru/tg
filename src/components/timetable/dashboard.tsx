@@ -9,6 +9,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { ScrollArea } from '@/components/ui/scroll-area';
 import { Progress } from '@/components/ui/progress';
 import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -29,6 +30,7 @@ interface Batch {
   branch: string;
   year: number;
   semester: number;
+  academicYear?: string;
 }
 
 interface GeneratedAssignment {
@@ -73,6 +75,16 @@ interface GenerationResult {
       hardConflicts: number;
     };
   };
+}
+
+interface TimetablePublicationStatus {
+  key: string;
+  branch: string;
+  semester: number;
+  academicYear?: string;
+  status: 'published' | 'unpublished';
+  generationId: string;
+  updatedAt?: string;
 }
 
 interface RequiredDatasetStatus {
@@ -134,6 +146,14 @@ interface AnalysisApiResponse {
 }
 
 const DAY_ORDER = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+const DEFAULT_ACADEMIC_YEAR = 'unknown';
+
+function buildSemesterKey(branch: string, semester: number, academicYear?: string) {
+  const safeBranch = String(branch || '').trim();
+  const safeSemester = Number.isFinite(semester) ? semester : 0;
+  const safeYear = (academicYear || DEFAULT_ACADEMIC_YEAR).trim();
+  return `${safeBranch}::${safeSemester}::${safeYear}`;
+}
 
 function toMinutes(time: string): number {
   const [hours, minutes] = time.split(':').map(Number);
@@ -155,6 +175,11 @@ export function TimetableDashboard() {
   const [qualityAnalysis, setQualityAnalysis] = useState<AnalysisApiResponse['data'] | null>(null);
   const [loadingAnalysis, setLoadingAnalysis] = useState(false);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
+  const [semesterStatuses, setSemesterStatuses] = useState<TimetablePublicationStatus[]>([]);
+  const [loadingStatuses, setLoadingStatuses] = useState(false);
+  const [statusError, setStatusError] = useState<string | null>(null);
+  const [outputStatus, setOutputStatus] = useState<'published' | 'unpublished'>('published');
+  const [statusUpdating, setStatusUpdating] = useState(false);
 
   // Fetch batches on mount
   useEffect(() => {
@@ -162,6 +187,7 @@ export function TimetableDashboard() {
     fetchUploadReadiness();
     fetchLatestGeneratedTimetable();
     fetchQualityAnalysis();
+    fetchSemesterStatuses();
   }, []);
 
   async function fetchQualityAnalysis() {
@@ -210,6 +236,29 @@ export function TimetableDashboard() {
     }
   }
 
+  async function fetchSemesterStatuses() {
+    setLoadingStatuses(true);
+    try {
+      const response = await fetch('/api/timetable-status', {
+        method: 'GET',
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to load timetable publish status');
+      }
+
+      const result = await response.json();
+      if (result.success && Array.isArray(result.data)) {
+        setSemesterStatuses(result.data);
+        setStatusError(null);
+      }
+    } catch (err) {
+      setStatusError(err instanceof Error ? err.message : 'Failed to load timetable status');
+    } finally {
+      setLoadingStatuses(false);
+    }
+  }
+
   async function fetchBatches() {
     setLoadingBatches(true);
     try {
@@ -240,12 +289,133 @@ export function TimetableDashboard() {
     }
   }
 
+  async function updateSemesterStatuses(
+    items: Array<{ branch: string; semester: number; academicYear?: string; status: 'published' | 'unpublished' }>,
+    successMessage: string
+  ) {
+    if (items.length === 0) {
+      return;
+    }
+
+    setStatusUpdating(true);
+    try {
+      const response = await fetch('/api/timetable-status', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.message || 'Failed to update timetable status');
+      }
+
+      await fetchSemesterStatuses();
+      toast.success(successMessage, {
+        description: 'Timetable status updated successfully',
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to update timetable status';
+      toast.error('Update Failed', {
+        description: message,
+      });
+    } finally {
+      setStatusUpdating(false);
+    }
+  }
+
+  async function updateBranchStatus(
+    branch: string,
+    status: 'published' | 'unpublished',
+    successMessage: string
+  ) {
+    setStatusUpdating(true);
+    try {
+      const response = await fetch('/api/timetable-status', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          scope: {
+            branch,
+            status,
+          },
+        }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.message || 'Failed to update branch timetable status');
+      }
+
+      await fetchSemesterStatuses();
+      toast.success(successMessage, {
+        description: 'Branch timetable status updated successfully',
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to update branch timetable status';
+      toast.error('Update Failed', {
+        description: message,
+      });
+    } finally {
+      setStatusUpdating(false);
+    }
+  }
+
+  const handleUnpublishSelected = async () => {
+    const items = publishedSelectedSemesters.map((semester) => ({
+      branch: semester.branch,
+      semester: semester.semester,
+      academicYear: semester.academicYear,
+      status: 'unpublished' as const,
+    }));
+
+    await updateSemesterStatuses(items, 'Selected semesters unpublished');
+  };
+
   const allRequiredUploaded = requiredDatasets.length > 0 && requiredDatasets.every((dataset) => dataset.uploaded);
   const missingDatasets = requiredDatasets.filter((dataset) => !dataset.uploaded);
 
   const batchById = useMemo(() => {
     return new Map(batches.map((batch) => [batch.batchId, batch]));
   }, [batches]);
+
+  const semesterStatusMap = useMemo(() => {
+    return new Map(semesterStatuses.map((status) => [status.key, status]));
+  }, [semesterStatuses]);
+
+  const selectedSemesters = useMemo(() => {
+    const semesterMap = new Map<
+      string,
+      { key: string; branch: string; semester: number; academicYear?: string }
+    >();
+
+    for (const batchId of selectedBatches) {
+      const batch = batchById.get(batchId);
+      if (!batch) {
+        continue;
+      }
+      const key = buildSemesterKey(batch.branch, batch.semester, batch.academicYear);
+      if (!semesterMap.has(key)) {
+        semesterMap.set(key, {
+          key,
+          branch: batch.branch,
+          semester: batch.semester,
+          academicYear: batch.academicYear,
+        });
+      }
+    }
+
+    return Array.from(semesterMap.values());
+  }, [selectedBatches, batchById]);
+
+  const publishedSelectedSemesters = useMemo(() => {
+    return selectedSemesters.filter((semester) => {
+      const status = semesterStatusMap.get(semester.key);
+      return status?.status === 'published';
+    });
+  }, [selectedSemesters, semesterStatusMap]);
 
   const groupedAssignments = useMemo(() => {
     const assignments = generationResult?.data?.assignments ?? [];
@@ -385,6 +555,17 @@ export function TimetableDashboard() {
       return;
     }
 
+    if (publishedSelectedSemesters.length > 0) {
+      const publishedLabels = publishedSelectedSemesters
+        .map((semester) => `${semester.branch} Sem ${semester.semester}`)
+        .join(', ');
+      setError('Selected semesters already have a published timetable. Unpublish before regenerating.');
+      toast.error('Published Timetable Locked', {
+        description: publishedLabels || 'Unpublish the selected semester(s) first',
+      });
+      return;
+    }
+
     if (selectedBatches.length === 0) {
       setError('Please select at least one batch');
       toast.error('No Batches Selected', {
@@ -402,7 +583,7 @@ export function TimetableDashboard() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           batchIds: selectedBatches,
-          publish: true,
+          publish: outputStatus === 'published',
           persist: true,
         }),
       });
@@ -414,6 +595,7 @@ export function TimetableDashboard() {
 
       const result: GenerationResult = await response.json();
       setGenerationResult(result);
+      await fetchSemesterStatuses();
       await fetchQualityAnalysis();
       setTab('results');
       setError(null);
@@ -601,6 +783,29 @@ export function TimetableDashboard() {
               </Alert>
             )}
 
+            {publishedSelectedSemesters.length > 0 && (
+              <Alert variant="destructive" className="border-amber-500/40 bg-amber-50 text-amber-900 dark:bg-amber-950/20 dark:text-amber-100">
+                <ShieldAlert className="h-4 w-4" />
+                <AlertTitle>Published timetable detected</AlertTitle>
+                <AlertDescription className="space-y-3">
+                  <p className="text-sm">
+                    Unpublish the following semester(s) before regenerating: {' '}
+                    {publishedSelectedSemesters
+                      .map((semester) => `${semester.branch} Sem ${semester.semester}`)
+                      .join(', ')}
+                  </p>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleUnpublishSelected}
+                    disabled={statusUpdating}
+                  >
+                    {statusUpdating ? 'Updating...' : 'Unpublish Selected Semesters'}
+                  </Button>
+                </AlertDescription>
+              </Alert>
+            )}
+
             <div className="grid gap-4 sm:grid-cols-2">
               <Card>
                 <CardHeader>
@@ -608,6 +813,17 @@ export function TimetableDashboard() {
                   <CardDescription>Choose batches to schedule</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-3">
+                  {loadingStatuses && (
+                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                      <RefreshCw className="h-3 w-3 animate-spin" />
+                      Loading publish status...
+                    </div>
+                  )}
+                  {statusError && (
+                    <div className="text-xs text-amber-600 dark:text-amber-400">
+                      Publish status unavailable. You can still select batches.
+                    </div>
+                  )}
                   {loadingBatches ? (
                     <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
                       <RefreshCw className="h-4 w-4 animate-spin" />
@@ -617,31 +833,49 @@ export function TimetableDashboard() {
                     <p className="text-sm text-slate-600 dark:text-slate-400">No batches found. Please upload data first.</p>
                   ) : (
                     <div className="space-y-2 max-h-96 overflow-y-auto">
-                      {batches.map((batch) => (
-                        <label
-                          key={batch._id}
-                          className="flex items-center gap-3 p-3 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer transition"
-                        >
-                          <Checkbox
-                            checked={selectedBatches.includes(batch.batchId)}
-                            onCheckedChange={(checked) => {
-                              if (checked) {
-                                setSelectedBatches([...selectedBatches, batch.batchId]);
-                              } else {
-                                setSelectedBatches(
-                                  selectedBatches.filter((id) => id !== batch.batchId)
-                                );
-                              }
-                            }}
-                          />
-                          <div className="flex-1 min-w-0">
-                            <p className="text-sm font-medium text-slate-900 dark:text-white truncate">{batch.batchName}</p>
-                            <p className="text-xs text-slate-600 dark:text-slate-400">
-                              {batch.branch} - Year {batch.year} - Sem {batch.semester}
-                            </p>
-                          </div>
-                        </label>
-                      ))}
+                      {batches.map((batch) => {
+                        const semesterKey = buildSemesterKey(batch.branch, batch.semester, batch.academicYear);
+                        const status = semesterStatusMap.get(semesterKey);
+                        const statusLabel = status?.status
+                          ? status.status === 'published'
+                            ? 'Published'
+                            : 'Unpublished'
+                          : 'Unknown';
+                        const statusVariant = status?.status
+                          ? status.status === 'published'
+                            ? 'default'
+                            : 'secondary'
+                          : 'outline';
+
+                        return (
+                          <label
+                            key={batch._id}
+                            className="flex items-center gap-3 p-3 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer transition"
+                          >
+                            <Checkbox
+                              checked={selectedBatches.includes(batch.batchId)}
+                              onCheckedChange={(checked) => {
+                                if (checked) {
+                                  setSelectedBatches([...selectedBatches, batch.batchId]);
+                                } else {
+                                  setSelectedBatches(
+                                    selectedBatches.filter((id) => id !== batch.batchId)
+                                  );
+                                }
+                              }}
+                            />
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-medium text-slate-900 dark:text-white truncate">{batch.batchName}</p>
+                              <p className="text-xs text-slate-600 dark:text-slate-400">
+                                {batch.branch} - Year {batch.year} - Sem {batch.semester}
+                              </p>
+                            </div>
+                            <Badge variant={statusVariant}>
+                              {statusLabel}
+                            </Badge>
+                          </label>
+                        );
+                      })}
                     </div>
                   )}
                 </CardContent>
@@ -667,12 +901,12 @@ export function TimetableDashboard() {
 
                   <div className="space-y-2">
                     <label className="text-sm font-medium text-slate-900 dark:text-slate-300">Output Status</label>
-                    <Select defaultValue="published">
+                    <Select value={outputStatus} onValueChange={(value) => setOutputStatus(value as 'published' | 'unpublished')}>
                       <SelectTrigger>
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="draft">Draft</SelectItem>
+                        <SelectItem value="unpublished">Unpublished</SelectItem>
                         <SelectItem value="published">Published</SelectItem>
                       </SelectContent>
                     </Select>
@@ -680,7 +914,12 @@ export function TimetableDashboard() {
 
                   <Button
                     onClick={handleGenerateTimetable}
-                    disabled={generating || selectedBatches.length === 0 || !allRequiredUploaded}
+                    disabled={
+                      generating ||
+                      selectedBatches.length === 0 ||
+                      !allRequiredUploaded ||
+                      publishedSelectedSemesters.length > 0
+                    }
                     className="w-full bg-emerald-600 hover:bg-emerald-700"
                   >
                     {generating ? (
@@ -1012,9 +1251,14 @@ export function TimetableDashboard() {
                         <p className="text-sm text-slate-600 dark:text-slate-400">No assignments to display.</p>
                       ) : (
                         <Tabs defaultValue={groupedAssignments[0].branch} className="w-full">
-                          <TabsList className="flex h-auto w-full flex-wrap justify-start gap-2 bg-muted/40 p-2">
+                          <ScrollArea className="w-full">
+                          <TabsList className="flex h-auto w-max whitespace-nowrap justify-start gap-2 bg-muted/40 p-2">
                             {groupedAssignments.map((branchGroup) => (
-                              <TabsTrigger key={branchGroup.branch} value={branchGroup.branch} className="data-[state=active]:bg-background">
+                              <TabsTrigger 
+                                key={branchGroup.branch} 
+                                value={branchGroup.branch} 
+                                className="py-2.5 px-5 data-[state=active]:bg-background data-[state=active]:shadow-sm transition-all"
+                              >
                                 {branchGroup.branch}
                                 <Badge variant="secondary" className="ml-2">
                                   {branchGroup.totalAssignments}
@@ -1022,28 +1266,116 @@ export function TimetableDashboard() {
                               </TabsTrigger>
                             ))}
                           </TabsList>
+                          </ScrollArea>
 
                           {groupedAssignments.map((branchGroup) => (
                             <TabsContent key={branchGroup.branch} value={branchGroup.branch} className="space-y-4">
                               <Card className="border-border bg-card/50">
                                 <CardHeader className="pb-3">
-                                  <div className="flex items-center justify-between gap-2">
-                                    <div>
-                                      <CardTitle className="text-lg text-slate-900 dark:text-white">
-                                        {branchGroup.branch}
-                                      </CardTitle>
-                                      <CardDescription>
-                                        {branchGroup.semesters.length} semester group(s)
-                                      </CardDescription>
-                                    </div>
-                                    <Badge variant="outline">{branchGroup.totalAssignments} sessions</Badge>
-                                  </div>
+                                  {(() => {
+                                    const semesterKeys = branchGroup.semesters
+                                      .map((semesterGroup) => {
+                                        const representative = semesterGroup.assignments[0];
+                                        const representativeBatch = representative
+                                          ? batchById.get(representative.batchId)
+                                          : undefined;
+                                        return buildSemesterKey(
+                                          branchGroup.branch,
+                                          semesterGroup.semester,
+                                          representativeBatch?.academicYear
+                                        );
+                                      })
+                                      .filter(Boolean);
+
+                                    const uniqueKeys = Array.from(new Set(semesterKeys));
+                                    const statusCounts = uniqueKeys.reduce(
+                                      (acc, key) => {
+                                        const status = semesterStatusMap.get(key)?.status;
+                                        acc.total += 1;
+                                        if (!status) {
+                                          acc.unknown += 1;
+                                        } else if (status === 'published') {
+                                          acc.published += 1;
+                                        }
+                                        return acc;
+                                      },
+                                      { total: 0, published: 0, unknown: 0 }
+                                    );
+
+                                    const branchStatusLabel =
+                                      statusCounts.total === 0
+                                        ? 'Unknown'
+                                        : statusCounts.unknown > 0
+                                          ? 'Unknown'
+                                          : statusCounts.published === 0
+                                            ? 'Unpublished'
+                                            : statusCounts.published === statusCounts.total
+                                              ? 'Published'
+                                              : 'Partial';
+
+                                    const branchStatusVariant =
+                                      branchStatusLabel === 'Published'
+                                        ? 'default'
+                                        : branchStatusLabel === 'Partial'
+                                          ? 'secondary'
+                                          : 'outline';
+
+                                    return (
+                                      <div className="flex flex-wrap items-center justify-between gap-3">
+                                        <div>
+                                          <CardTitle className="text-lg text-slate-900 dark:text-white">
+                                            {branchGroup.branch}
+                                          </CardTitle>
+                                          <CardDescription>
+                                            {branchGroup.semesters.length} semester group(s)
+                                          </CardDescription>
+                                        </div>
+                                        <div className="flex flex-wrap items-center gap-2">
+                                          <Badge variant={branchStatusVariant}>{branchStatusLabel}</Badge>
+                                          <Button
+                                            variant="outline"
+                                            size="sm"
+                                            onClick={() =>
+                                              updateBranchStatus(
+                                                branchGroup.branch,
+                                                'published',
+                                                `${branchGroup.branch} timetable published`
+                                              )
+                                            }
+                                            disabled={statusUpdating}
+                                          >
+                                            {statusUpdating ? 'Updating...' : 'Publish Branch'}
+                                          </Button>
+                                          <Button
+                                            variant="outline"
+                                            size="sm"
+                                            onClick={() =>
+                                              updateBranchStatus(
+                                                branchGroup.branch,
+                                                'unpublished',
+                                                `${branchGroup.branch} timetable unpublished`
+                                              )
+                                            }
+                                            disabled={statusUpdating}
+                                          >
+                                            {statusUpdating ? 'Updating...' : 'Unpublish Branch'}
+                                          </Button>
+                                          <Badge variant="outline">{branchGroup.totalAssignments} sessions</Badge>
+                                        </div>
+                                      </div>
+                                    );
+                                  })()}
                                 </CardHeader>
                                 <CardContent>
                                   <Tabs defaultValue={String(branchGroup.semesters[0]?.semester)} className="w-full space-y-4">
-                                    <TabsList className="flex h-auto w-full flex-wrap justify-start gap-2 bg-muted/40 p-2">
+                                    <ScrollArea className="w-full">
+                                    <TabsList className="flex h-auto w-max whitespace-nowrap justify-start gap-2 bg-muted/40 p-2">
                                       {branchGroup.semesters.map((semesterGroup) => (
-                                        <TabsTrigger key={semesterGroup.semester} value={String(semesterGroup.semester)} className="data-[state=active]:bg-background">
+                                        <TabsTrigger 
+                                          key={semesterGroup.semester} 
+                                          value={String(semesterGroup.semester)} 
+                                          className="py-2.5 px-5 data-[state=active]:bg-background data-[state=active]:shadow-sm transition-all"
+                                        >
                                           {semesterGroup.semester > 0 ? `Semester ${semesterGroup.semester}` : 'Unassigned Semester'}
                                           <Badge variant="secondary" className="ml-2">
                                             {semesterGroup.assignments.length}
@@ -1051,97 +1383,158 @@ export function TimetableDashboard() {
                                         </TabsTrigger>
                                       ))}
                                     </TabsList>
+                                    </ScrollArea>
 
-                                    {branchGroup.semesters.map((semesterGroup) => (
-                                      <TabsContent key={semesterGroup.semester} value={String(semesterGroup.semester)} className="space-y-2">
-                                        {(() => {
-                                          const slotMap = new Map<string, { startTime: string; endTime: string }>();
-                                          for (const assignment of semesterGroup.assignments) {
-                                            const key = `${assignment.startTime}::${assignment.endTime}`;
-                                            if (!slotMap.has(key)) {
-                                              slotMap.set(key, {
-                                                startTime: assignment.startTime,
-                                                endTime: assignment.endTime,
-                                              });
+                                    {branchGroup.semesters.map((semesterGroup) => {
+                                      const representative = semesterGroup.assignments[0];
+                                      const representativeBatch = representative
+                                        ? batchById.get(representative.batchId)
+                                        : undefined;
+                                      const semesterKey = buildSemesterKey(
+                                        branchGroup.branch,
+                                        semesterGroup.semester,
+                                        representativeBatch?.academicYear
+                                      );
+                                      const status = semesterStatusMap.get(semesterKey);
+                                      const nextStatus = status?.status === 'published' ? 'unpublished' : 'published';
+                                      const statusLabel = status?.status
+                                        ? status.status === 'published'
+                                          ? 'Published'
+                                          : 'Unpublished'
+                                        : 'Unknown';
+                                      const statusVariant = status?.status
+                                        ? status.status === 'published'
+                                          ? 'default'
+                                          : 'secondary'
+                                        : 'outline';
+                                      const actionLabel = status?.status === 'published' ? 'Unpublish' : 'Publish';
+
+                                      return (
+                                        <TabsContent key={semesterGroup.semester} value={String(semesterGroup.semester)} className="space-y-2">
+                                          <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-muted/30 px-3 py-2">
+                                            <div className="flex items-center gap-2">
+                                              <Badge variant={statusVariant}>
+                                                {statusLabel}
+                                              </Badge>
+                                              {representativeBatch?.academicYear && (
+                                                <span className="text-xs text-muted-foreground">
+                                                  AY {representativeBatch.academicYear}
+                                                </span>
+                                              )}
+                                            </div>
+                                            <Button
+                                              variant="outline"
+                                              size="sm"
+                                              onClick={() =>
+                                                updateSemesterStatuses(
+                                                  [
+                                                    {
+                                                      branch: branchGroup.branch,
+                                                      semester: semesterGroup.semester,
+                                                      academicYear: representativeBatch?.academicYear,
+                                                      status: nextStatus,
+                                                    },
+                                                  ],
+                                                  nextStatus === 'published'
+                                                    ? 'Semester timetable published'
+                                                    : 'Semester timetable unpublished'
+                                                )
+                                              }
+                                              disabled={statusUpdating}
+                                            >
+                                              {statusUpdating ? 'Updating...' : actionLabel}
+                                            </Button>
+                                          </div>
+
+                                          {(() => {
+                                            const slotMap = new Map<string, { startTime: string; endTime: string }>();
+                                            for (const assignment of semesterGroup.assignments) {
+                                              const key = `${assignment.startTime}::${assignment.endTime}`;
+                                              if (!slotMap.has(key)) {
+                                                slotMap.set(key, {
+                                                  startTime: assignment.startTime,
+                                                  endTime: assignment.endTime,
+                                                });
+                                              }
                                             }
-                                          }
 
-                                          const orderedSlots = Array.from(slotMap.values()).sort((left, right) => {
-                                            return toMinutes(left.startTime) - toMinutes(right.startTime);
-                                          });
+                                            const orderedSlots = Array.from(slotMap.values()).sort((left, right) => {
+                                              return toMinutes(left.startTime) - toMinutes(right.startTime);
+                                            });
 
-                                          const daySet = new Set(semesterGroup.assignments.map((a) => a.day));
-                                          const orderedDays = DAY_ORDER.filter((day) => daySet.has(day));
-                                          const unknownDays = Array.from(daySet).filter((day) => !DAY_ORDER.includes(day));
-                                          const allDays = [...orderedDays, ...unknownDays];
+                                            const daySet = new Set(semesterGroup.assignments.map((a) => a.day));
+                                            const orderedDays = DAY_ORDER.filter((day) => daySet.has(day));
+                                            const unknownDays = Array.from(daySet).filter((day) => !DAY_ORDER.includes(day));
+                                            const allDays = [...orderedDays, ...unknownDays];
 
-                                          const slotAssignments = new Map<string, GeneratedAssignment[]>();
-                                          for (const assignment of semesterGroup.assignments) {
-                                            const slotKey = `${assignment.startTime}::${assignment.endTime}`;
-                                            const cellKey = `${assignment.day}::${slotKey}`;
-                                            const existing = slotAssignments.get(cellKey) || [];
-                                            slotAssignments.set(cellKey, [...existing, assignment]);
-                                          }
+                                            const slotAssignments = new Map<string, GeneratedAssignment[]>();
+                                            for (const assignment of semesterGroup.assignments) {
+                                              const slotKey = `${assignment.startTime}::${assignment.endTime}`;
+                                              const cellKey = `${assignment.day}::${slotKey}`;
+                                              const existing = slotAssignments.get(cellKey) || [];
+                                              slotAssignments.set(cellKey, [...existing, assignment]);
+                                            }
 
-                                          return (
-                                            <div className="overflow-x-auto rounded-md border border-border">
-                                              <Table>
-                                                <TableHeader>
-                                                  <TableRow className="hover:bg-transparent">
-                                                    <TableHead className="min-w-[110px]">Day</TableHead>
-                                                    {orderedSlots.map((slot) => {
-                                                      const key = `${slot.startTime}::${slot.endTime}`;
-                                                      return (
-                                                        <TableHead key={key} className="min-w-[180px] whitespace-normal">
-                                                          {slot.startTime} - {slot.endTime}
-                                                        </TableHead>
-                                                      );
-                                                    })}
-                                                  </TableRow>
-                                                </TableHeader>
-                                                <TableBody>
-                                                  {allDays.map((day) => (
-                                                    <TableRow key={day}>
-                                                      <TableCell className="align-top text-sm font-semibold text-slate-900 dark:text-slate-100">
-                                                        {day}
-                                                      </TableCell>
+                                            return (
+                                              <div className="overflow-x-auto rounded-md border border-border">
+                                                <Table>
+                                                  <TableHeader>
+                                                    <TableRow className="hover:bg-transparent">
+                                                      <TableHead className="min-w-[110px]">Day</TableHead>
                                                       {orderedSlots.map((slot) => {
-                                                        const slotKey = `${slot.startTime}::${slot.endTime}`;
-                                                        const cellKey = `${day}::${slotKey}`;
-                                                        const items = slotAssignments.get(cellKey) || [];
-
+                                                        const key = `${slot.startTime}::${slot.endTime}`;
                                                         return (
-                                                          <TableCell key={cellKey} className="align-top">
-                                                            {items.length === 0 ? (
-                                                              <span className="text-xs text-muted-foreground">-</span>
-                                                            ) : (
-                                                              <div className="space-y-2">
-                                                                {items.map((item) => (
-                                                                  <div key={item.assignmentId} className="rounded-md border border-border/80 bg-muted/40 p-2">
-                                                                    <p className="text-xs font-semibold text-slate-900 dark:text-slate-100">
-                                                                      {item.subjectName}
-                                                                    </p>
-                                                                    <p className="text-[11px] text-slate-700 dark:text-slate-300">
-                                                                      {item.batchName || item.batchId}
-                                                                    </p>
-                                                                    <p className="text-[11px] text-slate-700 dark:text-slate-300">{item.teacherName}</p>
-                                                                    <p className="text-[11px] text-slate-600 dark:text-slate-400">{item.roomName}</p>
-                                                                  </div>
-                                                                ))}
-                                                              </div>
-                                                            )}
-                                                          </TableCell>
+                                                          <TableHead key={key} className="min-w-[180px] whitespace-normal">
+                                                            {slot.startTime} - {slot.endTime}
+                                                          </TableHead>
                                                         );
                                                       })}
                                                     </TableRow>
-                                                  ))}
-                                                </TableBody>
-                                              </Table>
-                                            </div>
-                                          );
-                                        })()}
-                                      </TabsContent>
-                                    ))}
+                                                  </TableHeader>
+                                                  <TableBody>
+                                                    {allDays.map((day) => (
+                                                      <TableRow key={day}>
+                                                        <TableCell className="align-top text-sm font-semibold text-slate-900 dark:text-slate-100">
+                                                          {day}
+                                                        </TableCell>
+                                                        {orderedSlots.map((slot) => {
+                                                          const slotKey = `${slot.startTime}::${slot.endTime}`;
+                                                          const cellKey = `${day}::${slotKey}`;
+                                                          const items = slotAssignments.get(cellKey) || [];
+
+                                                          return (
+                                                            <TableCell key={cellKey} className="align-top">
+                                                              {items.length === 0 ? (
+                                                                <span className="text-xs text-muted-foreground">-</span>
+                                                              ) : (
+                                                                <div className="space-y-2">
+                                                                  {items.map((item) => (
+                                                                    <div key={item.assignmentId} className="rounded-md border border-border/80 bg-muted/40 p-2">
+                                                                      <p className="text-xs font-semibold text-slate-900 dark:text-slate-100">
+                                                                        {item.subjectName}
+                                                                      </p>
+                                                                      <p className="text-[11px] text-slate-700 dark:text-slate-300">
+                                                                        {item.batchName || item.batchId}
+                                                                      </p>
+                                                                      <p className="text-[11px] text-slate-700 dark:text-slate-300">{item.teacherName}</p>
+                                                                      <p className="text-[11px] text-slate-600 dark:text-slate-400">{item.roomName}</p>
+                                                                    </div>
+                                                                  ))}
+                                                                </div>
+                                                              )}
+                                                            </TableCell>
+                                                          );
+                                                        })}
+                                                      </TableRow>
+                                                    ))}
+                                                  </TableBody>
+                                                </Table>
+                                              </div>
+                                            );
+                                          })()}
+                                        </TabsContent>
+                                      );
+                                    })}
                                   </Tabs>
                                 </CardContent>
                               </Card>

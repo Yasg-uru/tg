@@ -13,7 +13,7 @@ export async function GET(request: NextRequest) {
     await dbConnect();
 
     const batches = await Batch.find({})
-      .select('batchId batchName branch year semester')
+      .select('batchId batchName branch year semester academicYear')
       .lean();
 
     return NextResponse.json({

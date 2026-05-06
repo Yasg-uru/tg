@@ -8,6 +8,7 @@ export type BatchRecord = PlainDocument<{
   branch: string;
   year: number;
   semester: number;
+  academicYear?: string;
   totalStudents: number;
   sections: string;
   labBatchCount?: number;

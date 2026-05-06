@@ -572,6 +572,7 @@ export class TimetableGenerator {
     };
     availability: ReturnType<typeof buildAvailabilityState>;
     assignments: TimetableAssignment[];
+    generatedAssignments: TimetableAssignment[];
     batchById: Map<string, BatchRecord>;
     teacherById: Map<string, TeacherRecord>;
   }): boolean {
@@ -612,7 +613,7 @@ export class TimetableGenerator {
     sessionCountMap.set(candidate.day, (sessionCountMap.get(candidate.day) || 0) + 1);
     availability.subjectSessionCount.set(subjectKey, sessionCountMap);
 
-    params.assignments.push({
+    const newAssignment: TimetableAssignment = {
       assignmentId: randomUUID(),
       batchId: requirement.batchId,
       batchName: batch.batchName,
@@ -630,7 +631,10 @@ export class TimetableGenerator {
       sessionType: requirement.sessionType,
       slotCount: requirement.sessionLength,
       score: candidate.score,
-    });
+    };
+
+    params.assignments.push(newAssignment);
+    params.generatedAssignments.push(newAssignment);
 
     return true;
   }
@@ -642,9 +646,48 @@ export class TimetableGenerator {
     teachers: TeacherRecord[];
     rooms: RoomRecord[];
     timeslots: TimeslotRecord[];
+    lockedAssignments?: TimetableAssignment[];
   }): { assignments: TimetableAssignment[]; unplaced: SchedulingRequirement[] } {
     const availability = buildAvailabilityState();
+    const orderedSlots = params.timeslots
+      .filter((slot) => !slot.isBreak && !slot.isLunchBreak)
+      .sort((left, right) => left.slotOrder - right.slotOrder);
+    const slotIndexById = new Map(orderedSlots.map((slot, index) => [slot.slotId, index]));
+
     const assignments: TimetableAssignment[] = [];
+    const generatedAssignments: TimetableAssignment[] = [];
+    const lockedAssignments = params.lockedAssignments ?? [];
+
+    if (lockedAssignments.length > 0) {
+      for (const assignment of lockedAssignments) {
+        const baseIndex = slotIndexById.get(assignment.slotId);
+        if (baseIndex === undefined) {
+          continue;
+        }
+
+        const slotCount = Math.max(1, assignment.slotCount || 1);
+        const dayLoadMap = availability.teacherDayLoad.get(assignment.teacherId) || new Map<string, number>();
+        dayLoadMap.set(assignment.day, (dayLoadMap.get(assignment.day) || 0) + slotCount);
+        availability.teacherDayLoad.set(assignment.teacherId, dayLoadMap);
+        availability.teacherWeekLoad.set(
+          assignment.teacherId,
+          (availability.teacherWeekLoad.get(assignment.teacherId) || 0) + slotCount
+        );
+
+        for (let offset = 0; offset < slotCount; offset++) {
+          const slot = orderedSlots[baseIndex + offset];
+          if (!slot) {
+            break;
+          }
+          const slotKeyValue = slotKey(assignment.day, slot.slotId);
+          availability.teacherSlotKey.add(`${assignment.teacherId}::${slotKeyValue}`);
+          availability.roomSlotKey.add(`${assignment.roomId}::${slotKeyValue}`);
+          availability.batchSlotKey.add(`${assignment.batchId}::${slotKeyValue}`);
+        }
+
+        assignments.push(assignment);
+      }
+    }
     const batchById = new Map(params.batches.map((batch) => [batch.batchId, batch]));
     const teacherById = new Map(params.teachers.map((teacher) => [teacher.teacherId, teacher]));
     const weekDays = params.plan.preferredDays.length > 0 ? params.plan.preferredDays : WEEK_DAYS;
@@ -730,6 +773,7 @@ export class TimetableGenerator {
         candidate,
         availability,
         assignments,
+        generatedAssignments,
         batchById,
         teacherById,
       });
@@ -771,7 +815,7 @@ export class TimetableGenerator {
       }
     }
 
-    return { assignments, unplaced };
+    return { assignments: generatedAssignments, unplaced };
   }
 
   private enforceConflictFree(assignments: TimetableAssignment[]): {
@@ -812,6 +856,7 @@ export class TimetableGenerator {
     teachers: TeacherRecord[];
     rooms: RoomRecord[];
     timeslots: TimeslotRecord[];
+    lockedAssignments?: TimetableAssignment[];
   }): { assignments: TimetableAssignment[]; unplaced: SchedulingRequirement[] } {
     const restarts = this.restarts ?? 5;
     let bestResult: { assignments: TimetableAssignment[]; unplaced: SchedulingRequirement[] } | null = null;
@@ -826,6 +871,7 @@ export class TimetableGenerator {
         teachers: params.teachers,
         rooms: params.rooms,
         timeslots: params.timeslots,
+        lockedAssignments: params.lockedAssignments,
       });
 
       const validation = this.validateTimetable(result.assignments, params.requirements, params.teachers, params.rooms);
@@ -1117,9 +1163,10 @@ export class TimetableGenerator {
       academicCalendar: AcademicCalendarRecord[];
       constraints: ConstraintRecord[];
       labBatches: LabBatchRecord[];
+      lockedAssignments?: TimetableAssignment[];
     }
   ): Promise<TimetableGenerationResult> {
-    const { batches, subjects, teachers, rooms, timeslots, mappings, academicCalendar } = data;
+    const { batches, subjects, teachers, rooms, timeslots, mappings, academicCalendar, lockedAssignments } = data;
 
     const targetBatches = request.batchIds?.length
       ? batches.filter((batch) => request.batchIds?.includes(batch.batchId))
@@ -1208,6 +1255,7 @@ export class TimetableGenerator {
       teachers,
       rooms,
       timeslots,
+      lockedAssignments,
     });
 
     const conflictSafe = this.enforceConflictFree(assignments);
