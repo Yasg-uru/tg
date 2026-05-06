@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils";
 import { ThemeProvider } from "@/components/theme-provider";
 import { Toaster } from "@/components/ui/sonner";
 import { Navigation } from "@/components/navigation";
+import { getSessionSummary } from "@/lib/auth/session";
 
 const geist = Geist({subsets:['latin'],variable:'--font-sans'});
 
@@ -13,16 +14,18 @@ export const metadata: Metadata = {
   description: "Timetable Generation System",
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
+  const session = await getSessionSummary();
+
   return (
     <html lang="en" className={cn("font-sans", geist.variable)} suppressHydrationWarning>
       <body className="min-h-screen bg-background text-foreground antialiased">
         <ThemeProvider>
-          <Navigation />
+          {session ? <Navigation session={session} /> : null}
           {children}
           <Toaster />
         </ThemeProvider>

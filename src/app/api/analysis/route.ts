@@ -1,5 +1,6 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 
+import { ensureApiAuth } from '@/lib/auth/api';
 import { generateStructuredJson } from '@/lib/ai/providers';
 import { dbConnect } from '@/lib/db/connection';
 import { GeneratedTimetable } from '@/lib/db/generated-timetable.model';
@@ -352,8 +353,13 @@ function defaultAnalysis(payload: {
   };
 }
 
-export async function GET(): Promise<NextResponse> {
+export async function GET(request: NextRequest): Promise<NextResponse> {
   try {
+    const unauthorized = await ensureApiAuth(request);
+    if (unauthorized) {
+      return unauthorized;
+    }
+
     await dbConnect();
 
     const [batches, subjects, teachers, rooms, timeslots, latestTimetable] = await Promise.all([

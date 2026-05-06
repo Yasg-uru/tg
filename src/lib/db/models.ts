@@ -420,3 +420,143 @@ const timeslotsSchema = new Schema<ITimeslot>(
 export const Timeslot =
   mongoose.models.Timeslot ||
   mongoose.model<ITimeslot>('Timeslot', timeslotsSchema);
+
+// Auth Users
+export interface IAuthUser extends Document {
+  email: string;
+  name?: string;
+  role: 'owner' | 'admin' | 'staff' | 'viewer';
+  status: 'active' | 'disabled';
+  lastLoginAt?: Date;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const authUserSchema = new Schema<IAuthUser>(
+  {
+    email: {
+      type: String,
+      required: true,
+      unique: true,
+      index: true,
+      lowercase: true,
+      trim: true,
+    },
+    name: String,
+    role: {
+      type: String,
+      required: true,
+      enum: ['owner', 'admin', 'staff', 'viewer'],
+      default: 'staff',
+    },
+    status: {
+      type: String,
+      required: true,
+      enum: ['active', 'disabled'],
+      default: 'active',
+    },
+    lastLoginAt: Date,
+  },
+  { timestamps: true }
+);
+
+export const AuthUser =
+  mongoose.models.AuthUser ||
+  mongoose.model<IAuthUser>('AuthUser', authUserSchema);
+
+// Auth OTPs
+export interface IAuthOtp extends Document {
+  email: string;
+  codeHash: string;
+  purpose: 'signup' | 'login';
+  attempts: number;
+  maxAttempts: number;
+  expiresAt: Date;
+  requestIp?: string;
+  userAgent?: string;
+  consumedAt?: Date;
+  consumedReason?: string;
+  consumedByIp?: string;
+  consumedUserAgent?: string;
+  lastAttemptAt?: Date;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const authOtpSchema = new Schema<IAuthOtp>(
+  {
+    email: { type: String, required: true, index: true, lowercase: true },
+    codeHash: { type: String, required: true },
+    purpose: { type: String, required: true, enum: ['signup', 'login'] },
+    attempts: { type: Number, required: true, default: 0 },
+    maxAttempts: { type: Number, required: true },
+    expiresAt: { type: Date, required: true, expires: 0 },
+    requestIp: String,
+    userAgent: String,
+    consumedAt: Date,
+    consumedReason: String,
+    consumedByIp: String,
+    consumedUserAgent: String,
+    lastAttemptAt: Date,
+  },
+  { timestamps: true }
+);
+
+export const AuthOtp =
+  mongoose.models.AuthOtp || mongoose.model<IAuthOtp>('AuthOtp', authOtpSchema);
+
+// Auth Sessions
+export interface IAuthSession extends Document {
+  sessionId: string;
+  userId: mongoose.Types.ObjectId;
+  tokenHash: string;
+  expiresAt: Date;
+  lastSeenAt?: Date;
+  ip?: string;
+  userAgent?: string;
+  revokedAt?: Date;
+  revokedReason?: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const authSessionSchema = new Schema<IAuthSession>(
+  {
+    sessionId: { type: String, required: true, unique: true, index: true },
+    userId: { type: Schema.Types.ObjectId, ref: 'AuthUser', required: true, index: true },
+    tokenHash: { type: String, required: true, unique: true, index: true },
+    expiresAt: { type: Date, required: true, expires: 0 },
+    lastSeenAt: Date,
+    ip: String,
+    userAgent: String,
+    revokedAt: Date,
+    revokedReason: String,
+  },
+  { timestamps: true }
+);
+
+export const AuthSession =
+  mongoose.models.AuthSession ||
+  mongoose.model<IAuthSession>('AuthSession', authSessionSchema);
+
+// Auth Rate Limits
+export interface IAuthRateLimit extends Document {
+  key: string;
+  count: number;
+  resetAt: Date;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const authRateLimitSchema = new Schema<IAuthRateLimit>(
+  {
+    key: { type: String, required: true, unique: true, index: true },
+    count: { type: Number, required: true },
+    resetAt: { type: Date, required: true, expires: 0 },
+  },
+  { timestamps: true }
+);
+
+export const AuthRateLimit =
+  mongoose.models.AuthRateLimit ||
+  mongoose.model<IAuthRateLimit>('AuthRateLimit', authRateLimitSchema);

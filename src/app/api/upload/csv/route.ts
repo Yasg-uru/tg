@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { ensureApiAuth } from '@/lib/auth/api';
 import { CSVUploadService } from '@/lib/services/csv-upload.service';
 import { logger } from '@/lib/utils/logger';
 import { AppError } from '@/lib/utils/errors';
@@ -9,6 +10,11 @@ import { AppError } from '@/lib/utils/errors';
  */
 export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
+    const unauthorized = await ensureApiAuth(request);
+    if (unauthorized) {
+      return unauthorized;
+    }
+
     logger.info('CSV upload request received', { method: 'POST' });
 
     // Parse form data
@@ -85,7 +91,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 /**
  * OPTIONS handler for CORS
  */
-export async function OPTIONS(request: NextRequest) {
+export async function OPTIONS(_request: NextRequest) {
   return new NextResponse(null, {
     status: 200,
     headers: {

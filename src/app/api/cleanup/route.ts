@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import mongoose from 'mongoose';
+import { ensureApiAuth } from '@/lib/auth/api';
 import { dbConnect } from '@/lib/db/connection';
+
+function getErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : 'Unknown error';
+}
 
 /**
  * POST /api/cleanup
@@ -9,6 +14,11 @@ import { dbConnect } from '@/lib/db/connection';
  */
 export async function POST(request: NextRequest) {
   try {
+    const unauthorized = await ensureApiAuth(request);
+    if (unauthorized) {
+      return unauthorized;
+    }
+
     await dbConnect();
 
     const collections = ['subjectroommappings', 'labbatches'];
@@ -18,14 +28,19 @@ export async function POST(request: NextRequest) {
       try {
         await mongoose.connection.dropCollection(collectionName);
         results.push({ collection: collectionName, status: 'dropped' });
-      } catch (error: any) {
-        if (error.codeName === 'NamespaceNotFound') {
+      } catch (error: unknown) {
+        const codeName =
+          typeof error === 'object' && error !== null && 'codeName' in error
+            ? (error as { codeName?: string }).codeName
+            : undefined;
+
+        if (codeName === 'NamespaceNotFound') {
           results.push({ collection: collectionName, status: 'not found' });
         } else {
           results.push({
             collection: collectionName,
             status: 'error',
-            error: error.message,
+            error: getErrorMessage(error),
           });
         }
       }
@@ -36,12 +51,12 @@ export async function POST(request: NextRequest) {
       message: 'Cleanup complete',
       results,
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     return NextResponse.json(
       {
         success: false,
         message: 'Cleanup failed',
-        error: error.message,
+        error: getErrorMessage(error),
       },
       { status: 500 }
     );

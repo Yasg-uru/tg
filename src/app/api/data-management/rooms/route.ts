@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { ensureApiAuth } from '@/lib/auth/api';
 import { Room } from '@/lib/db/models';
 import { RoomSchema, parsePaginationQuery } from '@/lib/validation/data-management';
 import { ZodError } from 'zod';
@@ -11,6 +12,11 @@ function validatePagination(searchParams: URLSearchParams) {
 // GET - Fetch rooms with pagination and search
 export async function GET(request: NextRequest) {
   try {
+    const unauthorized = await ensureApiAuth(request);
+    if (unauthorized) {
+      return unauthorized;
+    }
+
     const searchParams = request.nextUrl.searchParams;
     const pagination = validatePagination(searchParams);
 
@@ -24,7 +30,7 @@ export async function GET(request: NextRequest) {
     const { page, limit, search, sortBy = 'roomId', sortOrder = 'asc' } = pagination;
 
     // Build query filter
-    const filter: any = {};
+    const filter: Record<string, unknown> = {};
     if (search) {
       filter.$or = [
         { roomId: { $regex: search, $options: 'i' } },
@@ -68,6 +74,11 @@ export async function GET(request: NextRequest) {
 // POST - Create a new room
 export async function POST(request: NextRequest) {
   try {
+    const unauthorized = await ensureApiAuth(request);
+    if (unauthorized) {
+      return unauthorized;
+    }
+
     const body = await request.json();
 
     // Validate request body

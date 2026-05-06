@@ -1,9 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { ensureApiAuth } from '@/lib/auth/api';
 import { dbConnect } from '@/lib/db/connection';
 import { Batch } from '@/lib/db/models';
 
 export async function GET(request: NextRequest) {
   try {
+    const unauthorized = await ensureApiAuth(request);
+    if (unauthorized) {
+      return unauthorized;
+    }
+
     await dbConnect();
 
     const batches = await Batch.find({})
@@ -15,11 +21,12 @@ export async function GET(request: NextRequest) {
       count: batches.length,
       batches,
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
     return NextResponse.json(
       {
         success: false,
-        message: error.message,
+        message,
       },
       { status: 500 }
     );

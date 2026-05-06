@@ -1,5 +1,6 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 
+import { ensureApiAuth } from '@/lib/auth/api';
 import { dbConnect } from '@/lib/db/connection';
 import {
   AcademicCalendar,
@@ -27,8 +28,13 @@ const REQUIRED_DATASETS = [
   { key: 'elective_groups', fileName: 'elective_groups.csv', label: 'Elective Groups', model: ElectiveGroup },
 ] as const;
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
+    const unauthorized = await ensureApiAuth(request);
+    if (unauthorized) {
+      return unauthorized;
+    }
+
     await dbConnect();
 
     const counts = await Promise.all(

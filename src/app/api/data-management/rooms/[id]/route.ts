@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { ensureApiAuth } from '@/lib/auth/api';
 import { Room } from '@/lib/db/models';
 import { RoomSchema } from '@/lib/validation/data-management';
 import { ZodError } from 'zod';
@@ -9,6 +10,11 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const unauthorized = await ensureApiAuth(request);
+    if (unauthorized) {
+      return unauthorized;
+    }
+
     const { id } = await params;
 
     const room = await Room.findOne({ roomId: id });
@@ -36,6 +42,11 @@ export async function PUT(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const unauthorized = await ensureApiAuth(request);
+    if (unauthorized) {
+      return unauthorized;
+    }
+
     const { id } = await params;
     const body = await request.json();
 
@@ -81,6 +92,11 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const unauthorized = await ensureApiAuth(request);
+    if (unauthorized) {
+      return unauthorized;
+    }
+
     const { id } = await params;
 
     const deletedRoom = await Room.findOneAndDelete({ roomId: id });

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { ensureApiAuth } from '@/lib/auth/api';
 import { Teacher } from '@/lib/db/models';
 import { TeacherSchema, parsePaginationQuery } from '@/lib/validation/data-management';
 import { ZodError } from 'zod';
@@ -9,6 +10,11 @@ function validatePagination(searchParams: URLSearchParams) {
 
 export async function GET(request: NextRequest) {
   try {
+    const unauthorized = await ensureApiAuth(request);
+    if (unauthorized) {
+      return unauthorized;
+    }
+
     const searchParams = request.nextUrl.searchParams;
     const pagination = validatePagination(searchParams);
 
@@ -21,7 +27,7 @@ export async function GET(request: NextRequest) {
 
     const { page, limit, search, sortBy = 'teacherId', sortOrder = 'asc' } = pagination;
 
-    const filter: any = {};
+    const filter: Record<string, unknown> = {};
     if (search) {
       filter.$or = [
         { teacherId: { $regex: search, $options: 'i' } },
@@ -61,6 +67,11 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
+    const unauthorized = await ensureApiAuth(request);
+    if (unauthorized) {
+      return unauthorized;
+    }
+
     const body = await request.json();
 
     const validatedData = TeacherSchema.parse(body);

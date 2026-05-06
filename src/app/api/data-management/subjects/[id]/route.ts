@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { ensureApiAuth } from '@/lib/auth/api';
 import { Subject } from '@/lib/db/models';
 import { SubjectSchema } from '@/lib/validation/data-management';
 import { ZodError } from 'zod';
@@ -8,6 +9,11 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const unauthorized = await ensureApiAuth(request);
+    if (unauthorized) {
+      return unauthorized;
+    }
+
     const { id } = await params;
 
     const subject = await Subject.findOne({ subjectCode: id });
@@ -34,6 +40,11 @@ export async function PUT(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const unauthorized = await ensureApiAuth(request);
+    if (unauthorized) {
+      return unauthorized;
+    }
+
     const { id } = await params;
     const body = await request.json();
 
@@ -76,6 +87,11 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const unauthorized = await ensureApiAuth(request);
+    if (unauthorized) {
+      return unauthorized;
+    }
+
     const { id } = await params;
 
     const deletedSubject = await Subject.findOneAndDelete({ subjectCode: id });

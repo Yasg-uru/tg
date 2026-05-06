@@ -34,3 +34,50 @@ You can check out [the Next.js GitHub repository](https://github.com/vercel/next
 The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
 
 Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+
+## Authentication
+
+The app now uses email OTP sign-up/sign-in with server-issued httpOnly session cookies.
+
+Required environment variables:
+
+- `AUTH_SECRET`
+- `AUTH_SMTP_HOST`
+- `AUTH_SMTP_PORT`
+- `AUTH_SMTP_USER`
+- `AUTH_SMTP_PASS`
+- `AUTH_SMTP_FROM`
+
+Supported auth environment variables:
+
+- `AUTH_SECRET`
+- `AUTH_OTP_DELIVERY`
+- `AUTH_OTP_TTL_MINUTES`
+- `AUTH_OTP_RESEND_SECONDS`
+- `AUTH_OTP_MAX_ATTEMPTS`
+- `AUTH_OTP_REQUEST_LIMIT`
+- `AUTH_OTP_REQUEST_WINDOW_SECONDS`
+- `AUTH_OTP_VERIFY_LIMIT`
+- `AUTH_OTP_VERIFY_WINDOW_SECONDS`
+- `AUTH_SESSION_TTL_DAYS`
+- `AUTH_COOKIE_NAME`
+- `AUTH_ALLOWED_EMAIL_DOMAINS`
+- `AUTH_ALLOWED_EMAILS`
+- `AUTH_SMTP_HOST`
+- `AUTH_SMTP_PORT`
+- `AUTH_SMTP_USER`
+- `AUTH_SMTP_PASS`
+- `AUTH_SMTP_FROM`
+
+Recommended production settings:
+
+- `AUTH_ALLOWED_EMAIL_DOMAINS` to limit registration to approved domains
+- `AUTH_ALLOWED_EMAILS` to allow only specific email addresses
+- `AUTH_OTP_DELIVERY=console` for local development when SMTP is not configured
+
+Flow:
+
+1. Open `/auth` and request an OTP with email and optional name.
+2. The server stores a hashed OTP challenge, rate-limits requests, and sends the code.
+3. Submit the code to verify the account and create a session cookie.
+4. Protected pages and API routes require that session to be present.

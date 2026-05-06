@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { ensureApiAuth } from '@/lib/auth/api';
 import { Subject } from '@/lib/db/models';
 import { SubjectSchema, parsePaginationQuery } from '@/lib/validation/data-management';
 import { ZodError } from 'zod';
@@ -10,6 +11,11 @@ function validatePagination(searchParams: URLSearchParams) {
 // GET - Fetch subjects with pagination and search
 export async function GET(request: NextRequest) {
   try {
+    const unauthorized = await ensureApiAuth(request);
+    if (unauthorized) {
+      return unauthorized;
+    }
+
     const searchParams = request.nextUrl.searchParams;
     const pagination = validatePagination(searchParams);
 
@@ -22,7 +28,7 @@ export async function GET(request: NextRequest) {
 
     const { page, limit, search, sortBy = 'subjectCode', sortOrder = 'asc' } = pagination;
 
-    const filter: any = {};
+    const filter: Record<string, unknown> = {};
     if (search) {
       filter.$or = [
         { subjectCode: { $regex: search, $options: 'i' } },
@@ -64,6 +70,11 @@ export async function GET(request: NextRequest) {
 // POST - Create a new subject
 export async function POST(request: NextRequest) {
   try {
+    const unauthorized = await ensureApiAuth(request);
+    if (unauthorized) {
+      return unauthorized;
+    }
+
     const body = await request.json();
 
     const validatedData = SubjectSchema.parse(body);
