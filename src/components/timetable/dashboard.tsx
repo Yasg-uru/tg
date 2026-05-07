@@ -180,6 +180,7 @@ export function TimetableDashboard() {
   const [statusError, setStatusError] = useState<string | null>(null);
   const [outputStatus, setOutputStatus] = useState<'published' | 'unpublished'>('published');
   const [statusUpdating, setStatusUpdating] = useState(false);
+  const [semesterFilter, setSemesterFilter] = useState<'all' | 'even' | 'odd'>('all');
 
   // Fetch batches on mount
   useEffect(() => {
@@ -809,8 +810,79 @@ export function TimetableDashboard() {
             <div className="grid gap-4 sm:grid-cols-2">
               <Card>
                 <CardHeader>
-                  <CardTitle>Select Batches</CardTitle>
-                  <CardDescription>Choose batches to schedule</CardDescription>
+                  <div className="flex flex-col gap-3">
+                    <div>
+                      <CardTitle>Select Batches</CardTitle>
+                      <CardDescription>Choose batches to schedule</CardDescription>
+                    </div>
+                    <div className="space-y-2">
+                      <div className="flex gap-2">
+                        <Button
+                          variant={semesterFilter === 'all' ? 'default' : 'outline'}
+                          size="sm"
+                          onClick={() => setSemesterFilter('all')}
+                        >
+                          All
+                        </Button>
+                        <Button
+                          variant={semesterFilter === 'even' ? 'default' : 'outline'}
+                          size="sm"
+                          onClick={() => setSemesterFilter('even')}
+                        >
+                          Even Sem
+                        </Button>
+                        <Button
+                          variant={semesterFilter === 'odd' ? 'default' : 'outline'}
+                          size="sm"
+                          onClick={() => setSemesterFilter('odd')}
+                        >
+                          Odd Sem
+                        </Button>
+                      </div>
+                      <div className="flex gap-2">
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={() => {
+                            const filteredIds = batches
+                              .filter((batch) => {
+                                if (semesterFilter === 'all') return true;
+                                if (semesterFilter === 'even') return batch.semester % 2 === 0;
+                                if (semesterFilter === 'odd') return batch.semester % 2 !== 0;
+                                return true;
+                              })
+                              .map((b) => b.batchId);
+                            setSelectedBatches([
+                              ...new Set([...selectedBatches, ...filteredIds]),
+                            ]);
+                          }}
+                        >
+                          Select All{semesterFilter === 'even' ? ' Evens' : semesterFilter === 'odd' ? ' Odds' : ''}
+                        </Button>
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={() => {
+                            const filteredIds = new Set(
+                              batches
+                                .filter((batch) => {
+                                  if (semesterFilter === 'all') return true;
+                                  if (semesterFilter === 'even') return batch.semester % 2 === 0;
+                                  if (semesterFilter === 'odd') return batch.semester % 2 !== 0;
+                                  return true;
+                                })
+                                .map((b) => b.batchId)
+                            );
+                            setSelectedBatches(
+                              selectedBatches.filter((id) => !filteredIds.has(id))
+                            );
+                          }}
+                        >
+                          Deselect All{semesterFilter === 'even' ? ' Evens' : semesterFilter === 'odd' ? ' Odds' : ''}
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
                 </CardHeader>
                 <CardContent className="space-y-3">
                   {loadingStatuses && (
@@ -833,49 +905,56 @@ export function TimetableDashboard() {
                     <p className="text-sm text-slate-600 dark:text-slate-400">No batches found. Please upload data first.</p>
                   ) : (
                     <div className="space-y-2 max-h-96 overflow-y-auto">
-                      {batches.map((batch) => {
-                        const semesterKey = buildSemesterKey(batch.branch, batch.semester, batch.academicYear);
-                        const status = semesterStatusMap.get(semesterKey);
-                        const statusLabel = status?.status
-                          ? status.status === 'published'
-                            ? 'Published'
-                            : 'Unpublished'
-                          : 'Unknown';
-                        const statusVariant = status?.status
-                          ? status.status === 'published'
-                            ? 'default'
-                            : 'secondary'
-                          : 'outline';
+                      {batches
+                        .filter((batch) => {
+                          if (semesterFilter === 'all') return true;
+                          if (semesterFilter === 'even') return batch.semester % 2 === 0;
+                          if (semesterFilter === 'odd') return batch.semester % 2 !== 0;
+                          return true;
+                        })
+                        .map((batch) => {
+                          const semesterKey = buildSemesterKey(batch.branch, batch.semester, batch.academicYear);
+                          const status = semesterStatusMap.get(semesterKey);
+                          const statusLabel = status?.status
+                            ? status.status === 'published'
+                              ? 'Published'
+                              : 'Unpublished'
+                            : 'Unknown';
+                          const statusVariant = status?.status
+                            ? status.status === 'published'
+                              ? 'default'
+                              : 'secondary'
+                            : 'outline';
 
-                        return (
-                          <label
-                            key={batch._id}
-                            className="flex items-center gap-3 p-3 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer transition"
-                          >
-                            <Checkbox
-                              checked={selectedBatches.includes(batch.batchId)}
-                              onCheckedChange={(checked) => {
-                                if (checked) {
-                                  setSelectedBatches([...selectedBatches, batch.batchId]);
-                                } else {
-                                  setSelectedBatches(
-                                    selectedBatches.filter((id) => id !== batch.batchId)
-                                  );
-                                }
-                              }}
-                            />
-                            <div className="flex-1 min-w-0">
-                              <p className="text-sm font-medium text-slate-900 dark:text-white truncate">{batch.batchName}</p>
-                              <p className="text-xs text-slate-600 dark:text-slate-400">
-                                {batch.branch} - Year {batch.year} - Sem {batch.semester}
-                              </p>
-                            </div>
-                            <Badge variant={statusVariant}>
-                              {statusLabel}
-                            </Badge>
-                          </label>
-                        );
-                      })}
+                          return (
+                            <label
+                              key={batch._id}
+                              className="flex items-center gap-3 p-3 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer transition"
+                            >
+                              <Checkbox
+                                checked={selectedBatches.includes(batch.batchId)}
+                                onCheckedChange={(checked) => {
+                                  if (checked) {
+                                    setSelectedBatches([...selectedBatches, batch.batchId]);
+                                  } else {
+                                    setSelectedBatches(
+                                      selectedBatches.filter((id) => id !== batch.batchId)
+                                    );
+                                  }
+                                }}
+                              />
+                              <div className="flex-1 min-w-0">
+                                <p className="text-sm font-medium text-slate-900 dark:text-white truncate">{batch.batchName}</p>
+                                <p className="text-xs text-slate-600 dark:text-slate-400">
+                                  {batch.branch} - Year {batch.year} - Sem {batch.semester}
+                                </p>
+                              </div>
+                              <Badge variant={statusVariant}>
+                                {statusLabel}
+                              </Badge>
+                            </label>
+                          );
+                        })}
                     </div>
                   )}
                 </CardContent>

@@ -188,20 +188,68 @@ export async function generateTimetable(
 
   // Persist result if requested
   let persisted = false;
+  let reusingExistingDoc = false;
+  let finalGenerationId = result.generationId; // Track which generationId to use
+
   if (request.persist !== false) {
     try {
-      await GeneratedTimetable.create({
-        generationId: result.generationId,
-        status: result.status,
-        provider: result.provider,
-        aiModel: result.model,
-        request: result.request,
-        plan: result.plan,
-        assignments: result.assignments,
-        validation: result.validation,
-        score: result.score,
-        summary: result.summary,
-      });
+      // Check for existing unpublished timetables for these semesters to reuse
+      let existingGenerationId: string | null = null;
+      if (request.batchIds?.length && selectedSemesterKeys.size > 0) {
+        const existingPublications = await TimetablePublication.find({
+          key: { $in: Array.from(selectedSemesterKeys) },
+          status: { $in: ['unpublished', 'draft'] },
+        })
+          .select('generationId')
+          .lean<{ generationId: string }[]>();
+
+        if (existingPublications.length > 0) {
+          // Use the existing generationId to update instead of creating new
+          existingGenerationId = existingPublications[0].generationId;
+          finalGenerationId = existingGenerationId; // Keep the old ID
+          
+          logger.info('Reusing existing draft timetable document', {
+            existingGenerationId,
+            semesters: Array.from(selectedSemesterKeys),
+          });
+        }
+      }
+
+      if (existingGenerationId) {
+        // Update existing document instead of creating new
+        await GeneratedTimetable.updateOne(
+          { generationId: existingGenerationId },
+          {
+            $set: {
+              status: result.status,
+              provider: result.provider,
+              aiModel: result.model,
+              request: result.request,
+              plan: result.plan,
+              assignments: result.assignments,
+              validation: result.validation,
+              score: result.score,
+              summary: result.summary,
+              updatedAt: new Date(),
+            },
+          }
+        );
+        reusingExistingDoc = true;
+      } else {
+        // Create new document
+        await GeneratedTimetable.create({
+          generationId: result.generationId,
+          status: result.status,
+          provider: result.provider,
+          aiModel: result.model,
+          request: result.request,
+          plan: result.plan,
+          assignments: result.assignments,
+          validation: result.validation,
+          score: result.score,
+          summary: result.summary,
+        });
+      }
       persisted = true;
     } catch (error) {
       logger.warn('Failed to persist timetable generation', {
@@ -222,7 +270,7 @@ export async function generateTimetable(
             semester: descriptor.semester,
             academicYear: descriptor.academicYear,
             status: publishStatus,
-            generationId: result.generationId,
+            generationId: finalGenerationId, // Use the (possibly reused) generationId
           },
         },
         upsert: true,
