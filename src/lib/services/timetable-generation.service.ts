@@ -216,28 +216,64 @@ export async function generateTimetable(
       }
 
       if (existingGenerationId) {
-        // Update existing document instead of creating new
-        await GeneratedTimetable.updateOne(
-          { generationId: existingGenerationId },
-          {
-            $set: {
-              status: result.status,
-              provider: result.provider,
-              aiModel: result.model,
-              request: result.request,
-              plan: result.plan,
-              assignments: result.assignments,
-              validation: result.validation,
-              score: result.score,
-              summary: result.summary,
-              updatedAt: new Date(),
-            },
+        // Check if the document actually exists before trying to update
+        const existingDoc = await GeneratedTimetable.findOne({ generationId: existingGenerationId });
+        
+        if (existingDoc) {
+          // Update existing document instead of creating new
+          const updateResult = await GeneratedTimetable.updateOne(
+            { generationId: existingGenerationId },
+            {
+              $set: {
+                status: result.status,
+                provider: result.provider,
+                aiModel: result.model,
+                request: result.request,
+                plan: result.plan,
+                assignments: result.assignments,
+                validation: result.validation,
+                score: result.score,
+                summary: result.summary,
+                updatedAt: new Date(),
+              },
+            }
+          );
+          
+          if (updateResult.matchedCount === 0) {
+            throw new Error(`Failed to update timetable: no document found with generationId ${existingGenerationId}`);
           }
-        );
-        reusingExistingDoc = true;
+          
+          reusingExistingDoc = true;
+        } else {
+          // Document was deleted or doesn't exist - create a new one instead
+          logger.warn('Referenced timetable document not found, creating new instead', {
+            oldGenerationId: existingGenerationId,
+            newGenerationId: result.generationId,
+          });
+          
+          const createdDoc = await GeneratedTimetable.create({
+            generationId: result.generationId,
+            status: result.status,
+            provider: result.provider,
+            aiModel: result.model,
+            request: result.request,
+            plan: result.plan,
+            assignments: result.assignments,
+            validation: result.validation,
+            score: result.score,
+            summary: result.summary,
+          });
+          
+          if (!createdDoc) {
+            throw new Error('Failed to create timetable document in database');
+          }
+          
+          // Update the publication to point to the new generationId
+          finalGenerationId = result.generationId;
+        }
       } else {
         // Create new document
-        await GeneratedTimetable.create({
+        const createdDoc = await GeneratedTimetable.create({
           generationId: result.generationId,
           status: result.status,
           provider: result.provider,
@@ -249,11 +285,20 @@ export async function generateTimetable(
           score: result.score,
           summary: result.summary,
         });
+        
+        if (!createdDoc) {
+          throw new Error('Failed to create timetable document in database');
+        }
       }
       persisted = true;
     } catch (error) {
-      logger.warn('Failed to persist timetable generation', {
-        error: error instanceof Error ? error.message : String(error),
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      logger.error('Failed to persist timetable generation', {
+        generationId: result.generationId,
+        error: errorMessage,
+      });
+      throw new AppError(`Failed to save timetable to database: ${errorMessage}`, 500, { 
+        generationId: result.generationId 
       });
     }
   }
@@ -286,5 +331,5 @@ export async function generateTimetable(
     }
   }
 
-  return result;
+  return { ...result, persisted };
 }

@@ -83,4 +83,5 @@ export interface TimetableGenerationResult {
     unplacedCount: number;
     hardConflicts: number;
   };
+  persisted?: boolean;
 }

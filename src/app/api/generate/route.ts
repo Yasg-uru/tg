@@ -75,12 +75,27 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const parsed = generateTimetableRequestSchema.parse(payload);
     const result = await generateTimetable(parsed);
 
+    if (!result.persisted && parsed.persist !== false) {
+      logger.error('Timetable generated but failed to persist to database', {
+        generationId: result.generationId,
+      });
+
+      return NextResponse.json(
+        {
+          success: false,
+          message: 'Timetable generated but failed to save to database. Check server logs for details.',
+          errors: ['Database persistence failed'],
+        },
+        { status: 500 }
+      );
+    }
+
     return NextResponse.json(
       {
         success: true,
         message: result.validation.conflictFree
-          ? 'Timetable generated without hard conflicts.'
-          : 'Timetable generated with review items.',
+          ? 'Timetable generated and saved successfully.'
+          : 'Timetable generated and saved with review items.',
         data: result,
       },
       { status: 200 }
